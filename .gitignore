@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+.claude
+Claude.md
+# Frontend
+node_modules/
+frontend/dist/

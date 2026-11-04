@@ -16,6 +16,28 @@ Luge start tracking: computer vision (OpenCV + YOLO) combined with data from a s
 └── frontend/        # Vite + React + TypeScript (dev proxy: /api, /ws -> :8000)
 ```
 
+## Running the app
+
+Use two terminals, both started from the repository root.
+
+**Terminal 1: backend**
+
+```powershell
+uv run fastapi dev backend/main.py
+```
+
+- API: http://127.0.0.1:8000/api/health
+- Interactive API docs: http://127.0.0.1:8000/docs
+
+**Terminal 2: frontend**
+
+```powershell
+cd frontend
+npm run dev
+```
+
+- App: http://localhost:5173
+
 ## Setup from scratch
 
 These steps assume a fresh Windows 11 machine with nothing installed. Commands are for PowerShell. On macOS or Linux, use the equivalent installers from each tool's website.
@@ -69,7 +91,7 @@ npm --version
 ### 4. Clone the repository
 
 ```powershell
-cd $HOME\Programowanie
+cd $<your desired path>
 git clone <repository-url> luge-start-tracker
 cd luge-start-tracker
 ```
@@ -96,27 +118,7 @@ cd ..
 
 Open the folder in VS Code, press `Ctrl+Shift+P`, choose **Python: Select Interpreter** and pick `.venv\Scripts\python.exe` from the repository root. Use the same interpreter for notebooks.
 
-## Running the app
 
-Use two terminals, both started from the repository root.
-
-**Terminal 1: backend**
-
-```powershell
-uv run fastapi dev backend/main.py
-```
-
-- API: http://127.0.0.1:8000/api/health
-- Interactive API docs: http://127.0.0.1:8000/docs
-
-**Terminal 2: frontend**
-
-```powershell
-cd frontend
-npm run dev
-```
-
-- App: http://localhost:5173
 
 ## Managing dependencies
 

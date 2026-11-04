@@ -72,7 +72,7 @@ Close and reopen PowerShell, then check:
 ```powershell
 uv --version
 ```
-
+yb8b6
 You do **not** need to install Python yourself. `uv` downloads the version from `.python-version` automatically.
 
 ### 3. Install Node.js (22 LTS or newer)

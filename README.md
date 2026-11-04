@@ -20,9 +20,11 @@ Luge start tracking: computer vision (OpenCV + YOLO) combined with data from a s
 
 Use two terminals, both started from the repository root.
 
+The commands are the same on Windows and macOS.
+
 **Terminal 1: backend**
 
-```powershell
+```
 uv run fastapi dev backend/main.py
 ```
 
@@ -31,7 +33,7 @@ uv run fastapi dev backend/main.py
 
 **Terminal 2: frontend**
 
-```powershell
+```
 cd frontend
 npm run dev
 ```
@@ -40,17 +42,25 @@ npm run dev
 
 ## Setup from scratch
 
-These steps assume a fresh Windows 11 machine with nothing installed. Commands are for PowerShell. On macOS or Linux, use the equivalent installers from each tool's website.
+These steps assume a fresh machine with nothing installed. Each step gives commands for **Windows** (PowerShell) and **macOS** (Terminal, zsh). On macOS, install [Homebrew](https://brew.sh/) first if you don't have it. On Linux, use your package manager.
 
 ### 1. Install Git
+
+Windows:
 
 ```powershell
 winget install --id Git.Git -e
 ```
 
-Close and reopen PowerShell, then check:
+macOS:
 
-```powershell
+```bash
+brew install git
+```
+
+Close and reopen the terminal, then check:
+
+```
 git --version
 ```
 
@@ -63,35 +73,61 @@ git config --global user.email "you@example.com"
 
 ### 2. Install uv
 
+Windows:
+
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-Close and reopen PowerShell, then check:
+macOS:
 
-```powershell
+```bash
+brew install uv
+```
+
+Close and reopen the terminal, then check:
+
+```
 uv --version
 ```
-yb8b6
+
 You do **not** need to install Python yourself. `uv` downloads the version from `.python-version` automatically.
 
 ### 3. Install Node.js (22 LTS or newer)
+
+Windows:
 
 ```powershell
 winget install --id OpenJS.NodeJS.LTS -e
 ```
 
-Close and reopen PowerShell, then check:
+macOS:
 
-```powershell
+```bash
+brew install node@22
+```
+
+Close and reopen the terminal, then check:
+
+```
 node --version
 npm --version
 ```
 
 ### 4. Clone the repository
 
+Windows:
+
 ```powershell
-cd $<your desired path>
+cd <your desired path>
+git clone <repository-url> luge-start-tracker
+cd luge-start-tracker
+```
+
+macOS:
+
+```bash
+cd <your desired path>
 git clone <repository-url> luge-start-tracker
 cd luge-start-tracker
 ```
@@ -100,7 +136,7 @@ cd luge-start-tracker
 
 From the repository root:
 
-```powershell
+```
 uv sync
 ```
 
@@ -108,7 +144,7 @@ This creates `.venv/` in the root, downloads Python 3.13 if needed and installs 
 
 ### 6. Install frontend dependencies
 
-```powershell
+```
 cd frontend
 npm install
 cd ..
@@ -116,8 +152,7 @@ cd ..
 
 ### 7. Select the Python interpreter in VS Code
 
-Open the folder in VS Code, press `Ctrl+Shift+P`, choose **Python: Select Interpreter** and pick `.venv\Scripts\python.exe` from the repository root. Use the same interpreter for notebooks.
-
+Open the folder in VS Code, press `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS), choose **Python: Select Interpreter** and pick `.venv\Scripts\python.exe` (macOS: `.venv/bin/python`) from the repository root. Use the same interpreter for notebooks.
 
 
 ## Managing dependencies
@@ -129,7 +164,7 @@ Open the folder in VS Code, press `Ctrl+Shift+P`, choose **Python: Select Interp
 
 ## Troubleshooting
 
-- **`uv` or `node` not recognized:** close and reopen the terminal (VS Code too) so PATH is refreshed.
+- **`uv` or `node` not recognized:** close and reopen the terminal (VS Code too) so PATH is refreshed. On macOS with `node@22`, you may also need `brew link --overwrite node@22`.
 - **`import luge_start_tracker` fails:** delete `.venv` and run `uv sync` again.
 - **`EBADENGINE` warnings from npm:** your Node.js is too old; install the current LTS.
 - **Port already in use:** stop the process using port 8000 or 5173, or change the port.

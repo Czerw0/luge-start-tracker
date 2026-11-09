@@ -13,18 +13,21 @@ Luge start tracking: computer vision (OpenCV + YOLO) combined with data from a s
 .
 ├── pyproject.toml   # Python dependencies (uv)
 ├── uv.lock
-├── main.py          # application entry point (tkinter GUI)
-└── ...              # additional modules will be added alongside
+├── app/
+│   ├── main.py             # application entry point (tkinter GUI)
+│   ├── video_analysis.py   # video input and sled sticker tracking
+│   └── data_analysis.py    # IMU data loading and processing
+└── analyses/               # saved analyses (created by the app, not committed)
 ```
 
-The repository stays flat: new Python files are added next to `main.py`.
+New modules go in `app/` next to `main.py`, with `snake_case` file names.
 
 ## Running the app
 
 From the repository root (same command on Windows and macOS):
 
 ```
-uv run main.py
+uv run app/main.py
 ```
 
 ## Setup from scratch

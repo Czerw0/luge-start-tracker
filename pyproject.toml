@@ -7,6 +7,7 @@ dependencies = [
     "matplotlib>=3.11.2",
     "numpy>=2.5.4",
     "opencv-python>=5.0.0.93",
+    "pandas>=3.1.1",
 ]
 
 [dependency-groups]
@@ -14,7 +15,6 @@ notebooks = [
     "ipykernel>=7.4.0",
     "jupyter>=1.1.1",
     "notebook>=7.6.4",
-    "pandas>=3.1.0",
     "scikit-learn>=1.9.1",
 ]
 

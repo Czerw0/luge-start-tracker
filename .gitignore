@@ -220,8 +220,14 @@ __marimo__/
 .streamlit/secrets.toml
 
 
+# Claude Code: share .claude/CLAUDE.md and .claude/settings.json, keep personal files local
+.claude/settings.local.json
+.claude/codediff.txt
 .claude
-Claude.md
+
+# Saved analyses (videos and athlete data are large/private)
+analyses/
+
 # Frontend
 node_modules/
 frontend/dist/

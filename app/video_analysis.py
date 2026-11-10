@@ -210,9 +210,11 @@ class MarkerTracker:
                      f"mid=({row['mid_x']:.2f},{row['mid_y']:.2f})")
         return "  |  ".join(parts)
 
-    def track_camera(self, camera_index=0, save_path=None, csv_path=None, on_frame=None, verbose=True):
-        # Live tracking until 'q' or Ctrl+C; save_path = mp4 video,
-        # csv_path = rows written as tracked
+    def track_camera(self, camera_index=0, save_path=None, csv_path=None, on_frame=None,
+                     verbose=True, stop_event=None, preview=True):
+        # Live tracking until 'q', Ctrl+C or stop_event (threading.Event) is set;
+        # save_path = mp4 video, csv_path = rows written as tracked,
+        # preview = OpenCV window (the GUI turns it off and draws the frames itself)
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
             raise IOError(f"Cannot open camera {camera_index}")
@@ -227,7 +229,7 @@ class MarkerTracker:
         i = 0
         t0 = time.perf_counter()
         try:
-            while True:
+            while stop_event is None or not stop_event.is_set():
                 ok, frame = cap.read()
                 if not ok:
                     break
@@ -252,10 +254,11 @@ class MarkerTracker:
                     print(self._format_line(row), flush=True)
                 i += 1
                 if on_frame is not None:
-                    on_frame(frame, det)
-                cv2.imshow("Live tracking (q = stop)", self.draw(frame, det))
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+                    on_frame(frame, det, row)
+                if preview:
+                    cv2.imshow("Live tracking (q = stop)", self.draw(frame, det))
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
         except KeyboardInterrupt:
             pass
         finally:
@@ -264,7 +267,8 @@ class MarkerTracker:
                 writer.release()
             if csv_file is not None:
                 csv_file.close()
-            cv2.destroyAllWindows()
+            if preview:
+                cv2.destroyAllWindows()
         return pd.DataFrame(rows)
 
     def draw(self, frame, detections):

@@ -1,4 +1,3 @@
-import base64 # for converting images to PNG for tkinter
 import threading # for running the camera in a separate thread
 import tkinter as tk
 from datetime import datetime
@@ -16,7 +15,7 @@ ANALYSES_DIR = Path(__file__).resolve().parent.parent / "analyses"
 RESULTS_WIDTH = 420   # px reserved for the results panel; the video gets the rest
 PLOT_HEIGHT = 260     # px height of the plots at the bottom
 PLOT_SECONDS = 10     # time window shown in the plots
-PLOT_EVERY = 6        # redraw plots every N polls (poll = 40 ms)
+PLOT_EVERY = 12       # redraw plots every N polls (poll = 20 ms)
 PREVIEW_ROWS = 600     # rows kept while only previewing
 PLOT_COLORS = {"GREEN": "green", "PINK": "deeppink"}
 
@@ -55,6 +54,7 @@ class Gui:
         self.rows = []
         self.error = None
         self.polls = 0
+        self.shown_frame = None
         self.mode = "idle"      # idle | preview | recording
         self.frozen = False
 
@@ -224,8 +224,10 @@ class Gui:
     def poll(self):
         # Refresh preview, results and plots (runs for the whole life of the window)
         self.polls += 1
-        if self.latest_frame is not None:
-            self.show(self.latest_frame)
+        frame = self.latest_frame
+        if frame is not None and frame is not self.shown_frame:   # only redraw new frames
+            self.shown_frame = frame
+            self.show(frame)
         if self.latest_row is not None:
             self.results.config(text=format_results(self.latest_row, self.tracker.markers))
         if self.polls % PLOT_EVERY == 0:
@@ -251,7 +253,7 @@ class Gui:
         elif self.mode == "preview" and not alive and self.error:
             self.status.config(text=f"Camera unavailable: {self.error}")
             self.mode = "idle"
-        self.window.after(40, self.poll)
+        self.window.after(20, self.poll)
 
     def show(self, frame):
         # Scale to the largest size that fits next to the results panel
@@ -260,8 +262,8 @@ class Gui:
         avail_h = self.middle.winfo_height()
         scale = max(min(avail_w / w, avail_h / h), 0.2)
         small = cv2.resize(frame, (round(w * scale), round(h * scale)))
-        ok, png = cv2.imencode(".png", small, [cv2.IMWRITE_PNG_COMPRESSION, 1])
-        self.photo = tk.PhotoImage(data=base64.b64encode(png.tobytes()))
+        ok, ppm = cv2.imencode(".ppm", small)   # raw format: much faster than PNG
+        self.photo = tk.PhotoImage(data=ppm.tobytes())
         self.preview.config(image=self.photo)
 
     def update_plots(self):

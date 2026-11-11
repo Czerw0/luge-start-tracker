@@ -17,6 +17,7 @@ GREEN = [(np.array([30, 60, 60]), np.array([90, 255, 255]))]
 
 MIN_AREA = 150
 KERNEL = 30   
+PROC_WIDTH = 640      # colour detection runs on a frame scaled to this width (speed); results are scaled back to full-res px
 MAX_LOST_FRAMES = 10  
 PROCESS_NOISE = (1, 1, 25, 25) # 1 - 1 px/frame, 25 px/frame^2
 MEASUREMENT_NOISE = 9 
@@ -74,57 +75,64 @@ class MarkerTracker:
         self._tracks = {}  # name - Kalman filter, size, frames lost
         self._filt = {}    # name - filtered position, last frame
 
-    def color_mask(self, frame, ranges):
-        # Convert to hsv
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    def color_mask(self, hsv, ranges, scale=1.0):
+        # hsv: already converted (and possibly downscaled) image
         mask = np.zeros(hsv.shape[:2], np.uint8)
         for lower, upper in ranges:
             mask |= cv2.inRange(hsv, lower, upper)
 
-        kernel = np.ones((KERNEL, KERNEL), np.uint8)
+        k = max(3, round(KERNEL * scale))
+        kernel = np.ones((k, k), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         return cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
-    def find_marker(self, frame, ranges, roi=None):
-        # Largest colour blob or None; roi = (x0, y0, x1, y1)
+    def find_marker(self, hsv, ranges, roi=None, scale=1.0):
+        # Largest colour blob or None. hsv is the downscaled image, roi = (x0, y0, x1, y1)
+        # in full-res px, returned Detection is in full-res px too.
         x0, y0 = 0, 0
         if roi is not None:
-            x0, y0, x1, y1 = roi
-            frame = frame[y0:y1, x0:x1]
-            if frame.size == 0:
+            x0, y0, x1, y1 = (int(v * scale) for v in roi)
+            hsv = hsv[y0:y1, x0:x1]
+            if hsv.size == 0:
                 return None
-        mask = self.color_mask(frame, ranges)
+        mask = self.color_mask(hsv, ranges, scale)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return None
 
         # Largest contour, convex hull, area
-        hull = cv2.convexHull(max(contours, key=cv2.contourArea)) + (x0, y0) 
+        hull = cv2.convexHull(max(contours, key=cv2.contourArea)) + (x0, y0)
         area = cv2.contourArea(hull)
-        if area < MIN_AREA:
+        if area < MIN_AREA * scale ** 2:
             return None
 
         # Sub-pixel centroid
         m = cv2.moments(hull)
-        return Detection(m["m10"] / m["m00"], m["m01"] / m["m00"], area, cv2.boundingRect(hull)) 
+        bx, by, bw, bh = cv2.boundingRect(hull)
+        return Detection(m["m10"] / m["m00"] / scale, m["m01"] / m["m00"] / scale, area / scale ** 2,
+                         (round(bx / scale), round(by / scale), round(bw / scale), round(bh / scale)))
 
     def process_frame(self, frame):
         # Raw detections {name: Detection or None}; filtered in self._filt
         # Lost marker: relaxed search around filter prediction
         result = {}
         self._filt = {}
+        # Downscale + HSV once per frame (shared by all markers)
+        scale = min(1.0, PROC_WIDTH / frame.shape[1])
+        small = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else frame
+        hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
         for name, ranges in self.markers.items():
             track = self._tracks.get(name)
             if track:
                 # Predict next position from Kalman filter
                 pred = track["kf"].predict()
                 px, py = int(pred[0, 0]), int(pred[1, 0])
-             # find marker in frame, or if lost, in relaxed search area around predicted position
-            det = self.find_marker(frame, ranges)
+            # find marker in frame, or if lost, in relaxed search area around predicted position
+            det = self.find_marker(hsv, ranges, scale=scale)
             if det is None and track:
                 w, h = track["size"]
                 around = Detection(px, py, 0, (px - w // 2, py - h // 2, w, h))
-                det = self.find_marker(frame, relax(ranges), roi=search_area(around, frame.shape))
+                det = self.find_marker(hsv, relax(ranges), roi=search_area(around, frame.shape), scale=scale)
 
             # Update Kalman filter and store filtered position
             state = None
@@ -214,6 +222,9 @@ class MarkerTracker:
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
             raise IOError(f"Cannot open camera {camera_index}")
+        # MJPG gives much higher frame rates than the default format on most webcams
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         self._tracks.clear()
         writer = None
@@ -237,7 +248,7 @@ class MarkerTracker:
                     writer = cv2.VideoWriter(str(save_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
                 if writer is not None:
                     writer.write(frame)
-                 # Process frame and store results
+                # Process frame and store results
                 det = self.process_frame(frame)
                 row = self._row(i, t, det)
                 rows.append(row)
@@ -246,7 +257,8 @@ class MarkerTracker:
                         csv_writer = csv.DictWriter(csv_file, fieldnames=list(row))
                         csv_writer.writeheader()
                     csv_writer.writerow(row)
-                    csv_file.flush()
+                    if i % 30 == 0:
+                        csv_file.flush()
                 i += 1
                 if on_frame is not None:
                     on_frame(frame, det, row)

@@ -17,6 +17,7 @@ RESULTS_WIDTH = 420   # px reserved for the results panel; the video gets the re
 PLOT_HEIGHT = 260     # px height of the plots at the bottom
 PLOT_SECONDS = 10     # time window shown in the plots
 PLOT_EVERY = 6        # redraw plots every N polls (poll = 40 ms)
+PREVIEW_ROWS = 600     # rows kept while only previewing
 PLOT_COLORS = {"yellow": "goldenrod", "red": "red"}
 
 
@@ -27,7 +28,7 @@ def format_results(row, names):
         lines += [name,
                   f"  raw     {row[name + '_x']:8.2f} {row[name + '_y']:8.2f}",
                   f"  kalman  {row[name + '_x_filt']:8.2f} {row[name + '_y_filt']:8.2f}",
-                  f"  size    {row[name + '_size']:8.0f}  ({row[name + '_w']:.0f} x {row[name + '_h']:.0f})",
+                  f"  size    {row[name + '_size']/10000:.2f}  ({row[name + '_w']:.0f} x {row[name + '_h']:.0f})",
                   ""]
     lines += [f"distance  {row['distance']:.0f}   (kalman {row['distance_filt']:.0f})",
               f"middle    {row['mid_x']:.2f}  {row['mid_y']:.2f}"]
@@ -54,6 +55,8 @@ class Gui:
         self.rows = []
         self.error = None
         self.polls = 0
+        self.mode = "idle"      # idle | preview | recording
+        self.frozen = False
 
         self.tabs = ttk.Notebook(self.window)
         self.tabs.pack(fill="both", expand=True)
@@ -68,6 +71,9 @@ class Gui:
         self.tabs.add(self.analysis_tab, text="Analysis")
         ttk.Label(self.analysis_tab, text="Analysis: saved measurements").pack(pady=20)
 
+        self.poll()
+        self.window.after(300, self.start_preview)   # show the camera right away
+
     def build_measurement_tab(self):
         tab = self.measurement_tab
         tab.columnconfigure(0, weight=1)
@@ -79,7 +85,8 @@ class Gui:
         controls.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         ttk.Label(controls, text="Camera:").pack(side="left")
         self.camera_var = tk.StringVar(value="0")
-        ttk.Spinbox(controls, from_=0, to=9, width=3, textvariable=self.camera_var).pack(side="left", padx=5)
+        ttk.Spinbox(controls, from_=0, to=9, width=3, textvariable=self.camera_var,
+                    command=self.on_camera_change).pack(side="left", padx=5)
         self.start_button = ttk.Button(controls, text="Start analysis", command=self.start)
         self.start_button.pack(side="left", padx=5)
         self.stop_button = ttk.Button(controls, text="Stop analysis", command=self.stop, state="disabled")
@@ -120,30 +127,77 @@ class Gui:
         self.canvas.get_tk_widget().config(height=PLOT_HEIGHT)
         self.canvas.get_tk_widget().grid(row=2, column=0, sticky="ew", padx=10, pady=10)
 
-    def start(self):
-        try:
-            camera = int(self.camera_var.get())
-        except ValueError:
-            messagebox.showerror("Luge Start Tracker", "Camera must be a number.")
-            return
-        self.folder = ANALYSES_DIR / (datetime.now().strftime("%Y-%m-%d_%H%M%S") + "_measurement")
-        self.tracker = MarkerTracker()
+    def run_thread(self, target, *args):
         self.stop_event.clear()
+        self.error = None
+        self.thread = threading.Thread(target=target, args=args, daemon=True)
+        self.thread.start()
+
+    def stop_thread(self):
+        # Stop whatever the worker is doing and wait until the camera is released
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join(timeout=3)
+
+    def camera_index(self):
+        try:
+            return int(self.camera_var.get())
+        except ValueError:
+            return None
+
+    def start_preview(self, keep_data=False):
+        # Live camera view + tracking values, nothing is saved
+        camera = self.camera_index()
+        if camera is None:
+            return
+        if not keep_data:
+            self.reset_data()
+        self.frozen = keep_data   # keep showing the finished analysis in the plots
+        self.mode = "preview"
+        self.tracker = MarkerTracker()
+        self.run_thread(self.preview_worker, camera)
+        self.status.config(text="Preview (not recording)")
+
+    def on_camera_change(self):
+        # Spinbox changed: only switch cameras while previewing
+        if self.mode == "preview" or self.mode == "idle":
+            self.stop_thread()
+            self.start_preview()
+
+    def reset_data(self):
+        # Back to the starting point: no values, empty plots
         self.latest_frame = None
         self.latest_row = None
         self.rows = []
-        self.error = None
+        self.results.config(text="")
+        self.update_plots()
 
-        self.thread = threading.Thread(target=self.worker, args=(camera,), daemon=True)
-        self.thread.start()
+    def start(self):
+        camera = self.camera_index()
+        if camera is None:
+            messagebox.showerror("Luge Start Tracker", "Camera must be a number.")
+            return
+        self.stop_thread()   # release the camera used by the preview
+        self.reset_data()
+        self.folder = ANALYSES_DIR / (datetime.now().strftime("%Y-%m-%d_%H%M%S") + "_measurement")
+        self.tracker = MarkerTracker()
+        self.frozen = False
+        self.mode = "recording"
+        self.run_thread(self.worker, camera)
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
-        self.poll()
 
     def stop(self):
         self.stop_event.set()
         self.stop_button.config(state="disabled")
         self.status.config(text="Stopping...")
+
+    def preview_worker(self, camera):
+        try:
+            self.tracker.track_camera(camera, on_frame=self.on_preview_frame, verbose=False,
+                                      stop_event=self.stop_event, preview=False)
+        except Exception as e:
+            self.error = str(e)
 
     def worker(self, camera):
         # Records video + tracking.csv into the analysis folder
@@ -160,8 +214,15 @@ class Gui:
         self.latest_row = row
         self.rows.append(row)
 
+    def on_preview_frame(self, frame, detections, row):
+        self.latest_frame = self.tracker.draw(frame, detections)
+        self.latest_row = row
+        if not self.frozen:
+            self.rows.append(row)
+            del self.rows[:-PREVIEW_ROWS]   # rolling buffer, preview data is not kept
+
     def poll(self):
-        # Refresh preview, results and plots while the worker runs
+        # Refresh preview, results and plots (runs for the whole life of the window)
         self.polls += 1
         if self.latest_frame is not None:
             self.show(self.latest_frame)
@@ -170,20 +231,27 @@ class Gui:
         if self.polls % PLOT_EVERY == 0:
             self.update_plots()
 
-        if self.thread.is_alive():
-            if not self.stop_event.is_set():
-                self.status.config(text=f"Recording... {len(self.rows)} frames")
-            self.window.after(40, self.poll)
-            return
-
-        self.update_plots()
-        self.start_button.config(state="normal")
-        self.stop_button.config(state="disabled")
-        if self.error:
-            self.status.config(text="Error")
-            messagebox.showerror("Luge Start Tracker", self.error)
-        else:
-            self.status.config(text=f"Saved {len(self.rows)} frames to {self.folder}")
+        alive = self.thread is not None and self.thread.is_alive()
+        if self.mode == "recording":
+            if alive:
+                if not self.stop_event.is_set():
+                    self.status.config(text=f"Recording... {len(self.rows)} frames")
+            else:
+                self.update_plots()
+                self.start_button.config(state="normal")
+                self.stop_button.config(state="disabled")
+                if self.error:
+                    self.status.config(text="Error")
+                    messagebox.showerror("Luge Start Tracker", self.error)
+                    self.start_preview()
+                else:
+                    saved = f"Saved {len(self.rows)} frames to {self.folder}"
+                    self.start_preview(keep_data=True)
+                    self.status.config(text=saved)
+        elif self.mode == "preview" and not alive and self.error:
+            self.status.config(text=f"Camera unavailable: {self.error}")
+            self.mode = "idle"
+        self.window.after(40, self.poll)
 
     def show(self, frame):
         # Scale to the largest size that fits next to the results panel
@@ -199,6 +267,9 @@ class Gui:
     def update_plots(self):
         rows = list(self.rows)
         if not rows:
+            for line in self.lines.values():
+                line.set_data([], [])
+            self.canvas.draw_idle()
             return
         t = np.array([r["t"] for r in rows])
         keep = t >= t[-1] - PLOT_SECONDS

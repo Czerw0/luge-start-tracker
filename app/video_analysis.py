@@ -66,12 +66,12 @@ def search_area(det, frame_shape):
 
 class MarkerTracker:
     def __init__(self, markers=None):
-        # name -> HSV ranges
+        # name - HSV ranges
         if markers is None:
             markers = {"yellow": YELLOW, "red": RED}
         self.markers = dict(markers)
-        self._tracks = {}  # name -> Kalman filter, size, frames lost
-        self._filt = {}    # name -> filtered position, last frame
+        self._tracks = {}  # name - Kalman filter, size, frames lost
+        self._filt = {}    # name - filtered position, last frame
 
     def color_mask(self, frame, ranges):
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -212,9 +212,6 @@ class MarkerTracker:
 
     def track_camera(self, camera_index=0, save_path=None, csv_path=None, on_frame=None,
                      verbose=True, stop_event=None, preview=True):
-        # Live tracking until 'q', Ctrl+C or stop_event (threading.Event) is set;
-        # save_path = mp4 video, csv_path = rows written as tracked,
-        # preview = OpenCV window (the GUI turns it off and draws the frames itself)
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
             raise IOError(f"Cannot open camera {camera_index}")

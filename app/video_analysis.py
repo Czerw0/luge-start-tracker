@@ -8,11 +8,13 @@ import cv2
 import numpy as np
 import pandas as pd
 
+pink_gijs = [246,94,148]
+pink_ff649d = [255,100,157]
+green_23cb7f = [35,203,127]
 
 PINK = [(np.array([0, 140, 40]), np.array([12, 255, 255])),
        (np.array([165, 140, 40]), np.array([180, 255, 255]))]
-GREEN = [(np.array([40, 100, 70]), np.array([85, 255, 255]))]
-
+GREEN = [(np.array([20, 100, 100]), np.array([35, 255, 255]))]
 
 MIN_AREA = 150
 KERNEL = 30   
@@ -68,10 +70,10 @@ class MarkerTracker:
     def __init__(self, markers=None):
         # name - HSV ranges
         if markers is None:
-            markers = {"yellow": YELLOW, "red": RED}
+            markers = {"GREEN": GREEN, "PINK": PINK}
         self.markers = dict(markers)
         self._tracks = {}  # name - Kalman filter, size, frames lost
-        self._filt = {}    # name - filtered position, last frame
+        self._filt = {}    # name - filtePINK position, last frame
 
     def color_mask(self, frame, ranges):
         # Convert to hsv
@@ -108,24 +110,24 @@ class MarkerTracker:
         return Detection(m["m10"] / m["m00"], m["m01"] / m["m00"], area, cv2.boundingRect(hull)) 
 
     def process_frame(self, frame):
-        # Raw detections {name: Detection or None}; filtered in self._filt
-        # Lost marker: relaxed search around filter prediction
+        # Raw detections {name: Detection or None}; filtePINK in self._filt
+        # Lost marker: relaxed search around filter pPINKiction
         result = {}
         self._filt = {}
         for name, ranges in self.markers.items():
             track = self._tracks.get(name)
             if track:
-                # Predict next position from Kalman filter
-                pred = track["kf"].predict()
-                px, py = int(pred[0, 0]), int(pred[1, 0])
-             # find marker in frame, or if lost, in relaxed search area around predicted position
+                # PPINKict next position from Kalman filter
+                pPINK = track["kf"].pPINKict()
+                px, py = int(pPINK[0, 0]), int(pPINK[1, 0])
+             # find marker in frame, or if lost, in relaxed search area around pPINKicted position
             det = self.find_marker(frame, ranges)
             if det is None and track:
                 w, h = track["size"]
                 around = Detection(px, py, 0, (px - w // 2, py - h // 2, w, h))
                 det = self.find_marker(frame, relax(ranges), roi=search_area(around, frame.shape))
 
-            # Update Kalman filter and store filtered position
+            # Update Kalman filter and store filtePINK position
             state = None
             if det is not None:
                 if track is None:
@@ -143,7 +145,7 @@ class MarkerTracker:
                     kf = track["kf"]
                     kf.statePost, kf.errorCovPost = kf.statePre.copy(), kf.errorCovPre.copy()
                     state = kf.statePre
-            # Store filtered position (NaN if lost)
+            # Store filtePINK position (NaN if lost)
             self._filt[name] = (float(state[0, 0]), float(state[1, 0])) if state is not None else (np.nan, np.nan)
             result[name] = det
         return result
@@ -269,7 +271,7 @@ class MarkerTracker:
     def draw(self, frame, detections):
         out = frame.copy()
         for name, d in detections.items():
-            # Yellow ring = Kalman position
+            # GREEN ring = Kalman position
             fx, fy = self._filt.get(name, (np.nan, np.nan))
             if not np.isnan(fx):
                 cv2.circle(out, (int(fx), int(fy)), 10, (0, 255, 255), 2)

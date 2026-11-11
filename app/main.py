@@ -1,4 +1,5 @@
-import threading # for running the camera in a separate thread
+import threading
+import time # for running the camera in a separate thread
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ import cv2
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from PIL import Image, ImageTk
 
 from video_analysis import MarkerTracker
 
@@ -15,7 +17,7 @@ ANALYSES_DIR = Path(__file__).resolve().parent.parent / "analyses"
 RESULTS_WIDTH = 420   # px reserved for the results panel; the video gets the rest
 PLOT_HEIGHT = 260     # px height of the plots at the bottom
 PLOT_SECONDS = 10     # time window shown in the plots
-PLOT_EVERY = 12       # redraw plots every N polls (poll = 20 ms)
+PLOT_INTERVAL = 0.6   # s between plot redraws; a matplotlib redraw blocks the video
 PREVIEW_ROWS = 600     # rows kept while only previewing
 PLOT_COLORS = {"GREEN": "green", "PINK": "deeppink"}
 
@@ -55,6 +57,7 @@ class Gui:
         self.error = None
         self.polls = 0
         self.shown_frame = None
+        self.last_plot = 0.0
         self.mode = "idle"      # idle | preview | recording
         self.frozen = False
 
@@ -105,8 +108,9 @@ class Gui:
         self.preview.pack(side="left", anchor="nw")
 
         # Bottom: plots of the last PLOT_SECONDS seconds
-        self.fig = Figure(figsize=(12, 3), dpi=100, layout="constrained")
+        self.fig = Figure(figsize=(12, 3), dpi=100)   # fixed layout: constrained layout is slow to redraw
         self.ax_x, self.ax_y, self.ax_d = self.fig.subplots(1, 3)
+        self.fig.subplots_adjust(left=0.05, right=0.99, bottom=0.2, top=0.88, wspace=0.2)
         self.ax_x.set_title("x (px)")
         self.ax_y.set_title("y (px)")
         self.ax_y.invert_yaxis()   # image y grows downwards
@@ -119,7 +123,7 @@ class Gui:
             c = PLOT_COLORS.get(name, name)
             for key, ax in (("x", self.ax_x), ("y", self.ax_y)):
                 self.lines[name + "_" + key + "_filt"] = ax.plot([], [], color=c, label=name + " (Kalman)")[0]
-                self.lines[name + "_" + key] = ax.plot([], [], ".", color=c, alpha=0.4, markersize=3)[0]
+                self.lines[name + "_" + key] = ax.plot([], [], ".", color=c, alpha=0.4, markersize=3, rasterized=True)[0]
         self.lines["distance_filt"] = self.ax_d.plot([], [], color="green", label="Kalman")[0]
         self.lines["distance"] = self.ax_d.plot([], [], ".", color="green", alpha=0.4, markersize=3)[0]
         self.ax_x.legend(loc="upper left", fontsize=8)
@@ -230,7 +234,8 @@ class Gui:
             self.show(frame)
         if self.latest_row is not None:
             self.results.config(text=format_results(self.latest_row, self.tracker.markers))
-        if self.polls % PLOT_EVERY == 0:
+        if time.perf_counter() - self.last_plot >= PLOT_INTERVAL:
+            self.last_plot = time.perf_counter()
             self.update_plots()
 
         alive = self.thread is not None and self.thread.is_alive()
@@ -253,7 +258,7 @@ class Gui:
         elif self.mode == "preview" and not alive and self.error:
             self.status.config(text=f"Camera unavailable: {self.error}")
             self.mode = "idle"
-        self.window.after(20, self.poll)
+        self.window.after(10, self.poll)
 
     def show(self, frame):
         # Scale to the largest size that fits next to the results panel
@@ -261,9 +266,9 @@ class Gui:
         avail_w = self.middle.winfo_width() - RESULTS_WIDTH
         avail_h = self.middle.winfo_height()
         scale = max(min(avail_w / w, avail_h / h), 0.2)
-        small = cv2.resize(frame, (round(w * scale), round(h * scale)))
-        ok, ppm = cv2.imencode(".ppm", small)   # raw format: much faster than PNG
-        self.photo = tk.PhotoImage(data=ppm.tobytes())
+        small = cv2.resize(frame, (round(w * scale), round(h * scale)),
+                           interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
+        self.photo = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB)))
         self.preview.config(image=self.photo)
 
     def update_plots(self):
@@ -273,11 +278,13 @@ class Gui:
                 line.set_data([], [])
             self.canvas.draw_idle()
             return
+        rows = rows[-PLOT_SECONDS * 60:]   # enough for the window at up to 60 fps
         t = np.array([r["t"] for r in rows])
         keep = t >= t[-1] - PLOT_SECONDS
         t = t[keep]
+        rows = [r for r, k in zip(rows, keep) if k]
         for key, line in self.lines.items():
-            line.set_data(t, np.array([r[key] for r in rows])[keep])
+            line.set_data(t, [r[key] for r in rows])
         for ax in (self.ax_x, self.ax_y, self.ax_d):
             ax.relim()
             ax.autoscale_view()

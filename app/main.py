@@ -10,6 +10,7 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+from imu_panel import ImuPanel
 from video_analysis import MarkerTracker
 
 ANALYSES_DIR = Path(__file__).resolve().parent.parent / "analyses"
@@ -126,6 +127,10 @@ class Gui:
         self.canvas = FigureCanvasTkAgg(self.fig, master=tab)
         self.canvas.get_tk_widget().config(height=PLOT_HEIGHT)
         self.canvas.get_tk_widget().grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+
+        # Bottom: live Movella DOT IMU (scan, connect, values, plot)
+        self.imu_panel = ImuPanel(tab)
+        self.imu_panel.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
 
     def run_thread(self, target, *args):
         self.stop_event.clear()

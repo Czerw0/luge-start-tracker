@@ -18,7 +18,7 @@ PLOT_HEIGHT = 260     # px height of the plots at the bottom
 PLOT_SECONDS = 10     # time window shown in the plots
 PLOT_EVERY = 6        # redraw plots every N polls (poll = 40 ms)
 PREVIEW_ROWS = 600     # rows kept while only previewing
-PLOT_COLORS = {"yellow": "goldenrod", "red": "red"}
+PLOT_COLORS = {"GREEN": "green", "PINK": "deeppink"}
 
 
 def format_results(row, names):
@@ -115,7 +115,7 @@ class Gui:
             ax.set_xlabel("t (s)")
             ax.grid(alpha=0.3)
         self.lines = {}   # (plot key, column) -> matplotlib line
-        for name in ("yellow", "red"):
+        for name in ("GREEN", "PINK"):
             c = PLOT_COLORS.get(name, name)
             for key, ax in (("x", self.ax_x), ("y", self.ax_y)):
                 self.lines[name + "_" + key + "_filt"] = ax.plot([], [], color=c, label=name + " (Kalman)")[0]

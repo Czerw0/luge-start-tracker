@@ -9,16 +9,16 @@ import numpy as np
 import pandas as pd
 
 
-RED = [(np.array([0, 140, 40]), np.array([12, 255, 255])),
+PINK = [(np.array([0, 140, 40]), np.array([12, 255, 255])),
        (np.array([165, 140, 40]), np.array([180, 255, 255]))]
 GREEN = [(np.array([40, 100, 70]), np.array([85, 255, 255]))]
-YELLOW = [(np.array([20, 100, 100]), np.array([35, 255, 255]))]
+
 
 MIN_AREA = 150
 KERNEL = 30   
 MAX_LOST_FRAMES = 10  
-PROCESS_NOISE = (1, 1, 25, 25)   
-MEASUREMENT_NOISE = 9
+PROCESS_NOISE = (1, 1, 25, 25) # 1 - 1 px/frame, 25 px/frame^2
+MEASUREMENT_NOISE = 9 
 
 Detection = namedtuple("Detection", "cx cy area bbox")
 
@@ -74,6 +74,7 @@ class MarkerTracker:
         self._filt = {}    # name - filtered position, last frame
 
     def color_mask(self, frame, ranges):
+        # Convert to hsv
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         mask = np.zeros(hsv.shape[:2], np.uint8)
         for lower, upper in ranges:
@@ -114,15 +115,17 @@ class MarkerTracker:
         for name, ranges in self.markers.items():
             track = self._tracks.get(name)
             if track:
+                # Predict next position from Kalman filter
                 pred = track["kf"].predict()
                 px, py = int(pred[0, 0]), int(pred[1, 0])
-
+             # find marker in frame, or if lost, in relaxed search area around predicted position
             det = self.find_marker(frame, ranges)
             if det is None and track:
                 w, h = track["size"]
                 around = Detection(px, py, 0, (px - w // 2, py - h // 2, w, h))
                 det = self.find_marker(frame, relax(ranges), roi=search_area(around, frame.shape))
 
+            # Update Kalman filter and store filtered position
             state = None
             if det is not None:
                 if track is None:
@@ -140,19 +143,29 @@ class MarkerTracker:
                     kf = track["kf"]
                     kf.statePost, kf.errorCovPost = kf.statePre.copy(), kf.errorCovPre.copy()
                     state = kf.statePre
-
+            # Store filtered position (NaN if lost)
             self._filt[name] = (float(state[0, 0]), float(state[1, 0])) if state is not None else (np.nan, np.nan)
             result[name] = det
         return result
 
     def median_position(self, detections):
+        # Detects a median position beetwen detected markers
+        # Actual position of the sledges if there is any difference in marksers 
         found = [d for d in detections.values() if d is not None]
         if not found:
             return np.nan, np.nan
         return (float(np.median([d[0] for d in found])),
                 float(np.median([d[1] for d in found])))
 
+    def pair_geometry(self, points):
+            # (distance, mid x, mid y) of first two markers, NaN if missing
+            a, b = (points[n] for n in list(self.markers)[:2])
+            if np.isnan(a[0]) or np.isnan(b[0]):
+                return np.nan, np.nan, np.nan
+            return float(np.hypot(a[0] - b[0], a[1] - b[1])), (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+
     def track_video(self, video_path):
+        # Track markers in a video file, return DataFrame with results
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise IOError(f"Cannot open video: {video_path}")
@@ -170,13 +183,6 @@ class MarkerTracker:
         cap.release()
         return pd.DataFrame(rows)
 
-    def pair_geometry(self, points):
-        # (distance, mid x, mid y) of first two markers, NaN if missing
-        a, b = (points[n] for n in list(self.markers)[:2])
-        if np.isnan(a[0]) or np.isnan(b[0]):
-            return np.nan, np.nan, np.nan
-        return float(np.hypot(a[0] - b[0], a[1] - b[1])), (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
-
     def _row(self, i, t, det):
         # Row per frame: <name>_x/_y centre (px), _x_filt/_y_filt Kalman,
         # _size area, _w/_h box; distance, mid_*; x, y, x_filt, y_filt marker median
@@ -187,6 +193,7 @@ class MarkerTracker:
         dist, mx, my = self.pair_geometry(raw)
         fdist, fmx, fmy = self.pair_geometry(self._filt)
 
+        # Build row dictionary with all values
         row = {"frame": i, "t": t}
         for name, d in det.items():
             row[f"{name}_x"], row[f"{name}_y"] = raw[name]
@@ -200,18 +207,9 @@ class MarkerTracker:
                    x=x, y=y, x_filt=fx, y_filt=fy)
         return row
 
-    def _format_line(self, row):
-        parts = [f"frame {row['frame']:5d}  t={row['t']:7.3f}s"]
-        for name in self.markers:
-            parts.append(f"{name}: raw=({row[name + '_x']:.2f},{row[name + '_y']:.2f}) "
-                         f"kalman=({row[name + '_x_filt']:.2f},{row[name + '_y_filt']:.2f}) "
-                         f"A={row[name + '_size']:.0f} {row[name + '_w']:.0f}x{row[name + '_h']:.0f}")
-        parts.append(f"dist={row['distance']:.0f} (kalman {row['distance_filt']:.0f}) "
-                     f"mid=({row['mid_x']:.2f},{row['mid_y']:.2f})")
-        return "  |  ".join(parts)
-
     def track_camera(self, camera_index=0, save_path=None, csv_path=None, on_frame=None,
-                     verbose=True, stop_event=None, preview=True):
+                     stop_event=None, preview=True):
+        # Track markers in a live camera, return DataFrame with results
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
             raise IOError(f"Cannot open camera {camera_index}")
@@ -225,6 +223,7 @@ class MarkerTracker:
         rows = []
         i = 0
         t0 = time.perf_counter()
+        # Process frames until stop_event is set or camera ends
         try:
             while stop_event is None or not stop_event.is_set():
                 ok, frame = cap.read()
@@ -237,7 +236,7 @@ class MarkerTracker:
                     writer = cv2.VideoWriter(str(save_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
                 if writer is not None:
                     writer.write(frame)
-
+                 # Process frame and store results
                 det = self.process_frame(frame)
                 row = self._row(i, t, det)
                 rows.append(row)
@@ -247,8 +246,6 @@ class MarkerTracker:
                         csv_writer.writeheader()
                     csv_writer.writerow(row)
                     csv_file.flush()
-                if verbose:
-                    print(self._format_line(row), flush=True)
                 i += 1
                 if on_frame is not None:
                     on_frame(frame, det, row)
@@ -258,6 +255,7 @@ class MarkerTracker:
                         break
         except KeyboardInterrupt:
             pass
+        # Release resources and return DataFrame
         finally:
             cap.release()
             if writer is not None:

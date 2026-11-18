@@ -1,6 +1,6 @@
 import csv
 import time
-from collections import namedtuple
+from collections import deque, namedtuple
 from datetime import datetime
 from pathlib import Path
 
@@ -21,8 +21,12 @@ PROC_WIDTH = 640      # colour detection runs on a frame scaled to this width (s
 MAX_LOST_FRAMES = 10  
 PROCESS_NOISE = (1, 1, 25, 25) # 1 - 1 px/frame, 25 px/frame^2
 MEASUREMENT_NOISE = 9 
+MARKER_GAP_MM = 51.0   # real edge-to-edge gap between the GREEN and PINK boxes
+SCALE_FRAMES = 30      # mm/px = median over the last N frames (less flicker)
+SPEED_WINDOW_S = 0.2   # speed = slope of a line fitted to the last 0.2 s of positions
 
-Detection = namedtuple("Detection", "cx cy area bbox")
+# hull: outline of the marker in full-res px (float32), used for the edge-to-edge gap
+Detection = namedtuple("Detection", "cx cy area bbox hull", defaults=(None,))
 
 
 def new_kalman(x, y):
@@ -53,6 +57,20 @@ def save_tracking(df, folder):
     return path
 
 
+def polygon_gap(a, b):
+    # Shortest distance (px) between two convex outlines, 0 if they touch or overlap.
+    # For convex shapes the closest pair is always a corner of one and an edge of the other,
+    # so testing every corner against the other outline gives the exact gap.
+    best = np.inf
+    for pts, other in ((a, b), (b, a)):
+        for x, y in pts.reshape(-1, 2):
+            d = cv2.pointPolygonTest(other, (float(x), float(y)), True)   # > 0 inside, < 0 outside
+            if d >= 0:
+                return 0.0
+            best = min(best, -d)
+    return float(best)
+
+
 def relax(ranges):
     # Lower min saturation/brightness (blur washes colour out)
     return [(np.maximum(lo - (0, 60, 20), 0), hi) for lo, hi in ranges]
@@ -74,6 +92,14 @@ class MarkerTracker:
         self.markers = dict(markers)
         self._tracks = {}  # name - Kalman filter, size, frames lost
         self._filt = {}    # name - filtered position, last frame
+        self.reset_speed()
+
+    def reset_speed(self):
+        # Scale (mm/px) and speed history; cleared at the start of every recording
+        self._gaps = deque(maxlen=SCALE_FRAMES)
+        self._mid_hist = deque()   # (t, mid x px, mid y px)
+        self.mm_per_px = np.nan
+        self.speed = np.nan
 
     def color_mask(self, hsv, ranges, scale=1.0):
         # hsv: already converted (and possibly downscaled) image
@@ -110,7 +136,8 @@ class MarkerTracker:
         m = cv2.moments(hull)
         bx, by, bw, bh = cv2.boundingRect(hull)
         return Detection(m["m10"] / m["m00"] / scale, m["m01"] / m["m00"] / scale, area / scale ** 2,
-                         (round(bx / scale), round(by / scale), round(bw / scale), round(bh / scale)))
+                         (round(bx / scale), round(by / scale), round(bw / scale), round(bh / scale)),
+                         (hull / scale).astype(np.float32))
 
     def process_frame(self, frame):
         # Raw detections {name: Detection or None}; filtered in self._filt
@@ -173,6 +200,28 @@ class MarkerTracker:
                 return np.nan, np.nan, np.nan
             return float(np.hypot(a[0] - b[0], a[1] - b[1])), (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
 
+    def update_speed(self, t, det, mx, my):
+        # Scale from the known 51 mm gap between the boxes, then speed of the midpoint in m/s
+        a, b = (det.get(n) for n in list(self.markers)[:2])
+        gap = polygon_gap(a.hull, b.hull) if a is not None and b is not None else np.nan
+        if gap > 0:
+            self._gaps.append(gap)
+        self.mm_per_px = MARKER_GAP_MM / float(np.median(self._gaps)) if self._gaps else np.nan
+
+        if not np.isnan(mx):
+            self._mid_hist.append((t, mx, my))
+        while self._mid_hist and self._mid_hist[0][0] < t - SPEED_WINDOW_S:
+            self._mid_hist.popleft()
+        self.speed = np.nan
+        if len(self._mid_hist) >= 3 and not np.isnan(self.mm_per_px):
+            h = np.array(self._mid_hist)
+            if h[-1, 0] - h[0, 0] > 0:
+                # Least-squares slope: robust to pixel jitter and uneven frame times
+                vx = np.polyfit(h[:, 0], h[:, 1], 1)[0]
+                vy = np.polyfit(h[:, 0], h[:, 2], 1)[0]
+                self.speed = float(np.hypot(vx, vy)) * self.mm_per_px / 1000.0   # px/s -> m/s
+        return gap
+
     def track_video(self, video_path):
         # Track markers in a video file, return DataFrame with results
         cap = cv2.VideoCapture(str(video_path))
@@ -181,6 +230,7 @@ class MarkerTracker:
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
         self._tracks.clear()
+        self.reset_speed()
         rows = []
         i = 0
         while True:
@@ -201,6 +251,7 @@ class MarkerTracker:
         raw = {n: (d.cx, d.cy) if d else (np.nan, np.nan) for n, d in det.items()}
         dist, mx, my = self.pair_geometry(raw)
         fdist, fmx, fmy = self.pair_geometry(self._filt)
+        gap = self.update_speed(t, det, mx, my)
 
         # Build row dictionary with all values
         row = {"frame": i, "t": t}
@@ -213,7 +264,8 @@ class MarkerTracker:
         # distance: whole px; positions keep decimals
         row.update(distance=np.round(dist), mid_x=mx, mid_y=my,
                    distance_filt=np.round(fdist), mid_x_filt=fmx, mid_y_filt=fmy,
-                   x=x, y=y, x_filt=fx, y_filt=fy)
+                   x=x, y=y, x_filt=fx, y_filt=fy,
+                   gap_px=gap, mm_per_px=self.mm_per_px, speed_mps=self.speed)
         return row
 
     def track_camera(self, camera_index=0, save_path=None, csv_path=None, on_frame=None,
@@ -227,6 +279,7 @@ class MarkerTracker:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         self._tracks.clear()
+        self.reset_speed()
         writer = None
         csv_file = csv_writer = None
         if csv_path is not None:
@@ -288,7 +341,9 @@ class MarkerTracker:
                 cv2.circle(out, (int(fx), int(fy)), 10, (0, 255, 255), 2)
             if d is None:
                 continue
-            cx, cy, area, (x, y, w, h) = d
+            cx, cy, area, (x, y, w, h), hull = d
+            if hull is not None:
+                cv2.polylines(out, [hull.round().astype(np.int32)], True, (255, 255, 0), 1)
             cv2.rectangle(out, (x, y), (x + w, y + h), (255, 0, 255), 2)
             cv2.circle(out, (round(cx), round(cy)), 4, (0, 0, 255), -1)
             cv2.putText(out, f"{name} ({cx:.1f},{cy:.1f}) A={area:.0f}", (x, max(y - 8, 12)),
@@ -302,6 +357,13 @@ class MarkerTracker:
             cv2.drawMarker(out, (round(mx), round(my)), (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
             cv2.putText(out, f"d={dist:.0f}px", (round(mx) + 12, round(my) - 12),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        # Speed (m/s) and scale in the top-left corner
+        if not np.isnan(self.mm_per_px):
+            text = f"{self.speed:.2f} m/s" if not np.isnan(self.speed) else "-- m/s"
+            cv2.putText(out, text, (15, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 0), 6)
+            cv2.putText(out, text, (15, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 2)
+            cv2.putText(out, f"{self.mm_per_px:.3f} mm/px", (15, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        (255, 255, 255), 1)
         return out
 
 

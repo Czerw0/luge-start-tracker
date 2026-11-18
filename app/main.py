@@ -11,6 +11,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from PIL import Image, ImageTk
 
+from dashboard import Dashboard
 from imu_panel import ImuPanel
 from video_analysis import MarkerTracker
 
@@ -77,7 +78,11 @@ class Gui:
         # Analysis tab: load saved analyses, video player, pose estimation (optional)
         self.analysis_tab = ttk.Frame(self.tabs)
         self.tabs.add(self.analysis_tab, text="Analysis")
-        ttk.Label(self.analysis_tab, text="Analysis: saved measurements").pack(pady=20)
+        self.dashboard = Dashboard(self.analysis_tab, ANALYSES_DIR)
+        self.dashboard.pack(fill="both", expand=True)
+        # Pick up a freshly saved recording when the user switches to the tab
+        self.tabs.bind("<<NotebookTabChanged>>",
+                       lambda e: self.dashboard.refresh() if self.tabs.select() == str(self.analysis_tab) else None)
 
         self.poll()
         self.window.after(300, self.start_preview)   # show the camera right away

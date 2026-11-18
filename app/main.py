@@ -33,7 +33,11 @@ def format_results(row, names):
                   f"  size    {row[name + '_size']/10000:.2f}  ({row[name + '_w']:.0f} x {row[name + '_h']:.0f})",
                   ""]
     lines += [f"distance  {row['distance']:.0f}   (kalman {row['distance_filt']:.0f})",
-              f"middle    {row['mid_x']:.2f}  {row['mid_y']:.2f}"]
+              f"middle    {row['mid_x']:.2f}  {row['mid_y']:.2f}",
+              "",
+              f"gap       {row['gap_px']:.1f} px = 51 mm",
+              f"scale     {row['mm_per_px']:.3f} mm/px",
+              f"speed     {row['speed_mps']:.2f} m/s"]
     return "\n".join(lines)
 
 
@@ -110,13 +114,14 @@ class Gui:
 
         # Bottom: plots of the last PLOT_SECONDS seconds
         self.fig = Figure(figsize=(12, 3), dpi=100)   # fixed layout: constrained layout is slow to redraw
-        self.ax_x, self.ax_y, self.ax_d = self.fig.subplots(1, 3)
+        self.ax_x, self.ax_y, self.ax_d, self.ax_v = self.fig.subplots(1, 4)
         self.fig.subplots_adjust(left=0.05, right=0.99, bottom=0.2, top=0.88, wspace=0.2)
         self.ax_x.set_title("x (px)")
         self.ax_y.set_title("y (px)")
         self.ax_y.invert_yaxis()   # image y grows downwards
         self.ax_d.set_title("distance (px)")
-        for ax in (self.ax_x, self.ax_y, self.ax_d):
+        self.ax_v.set_title("speed (m/s)")
+        for ax in (self.ax_x, self.ax_y, self.ax_d, self.ax_v):
             ax.set_xlabel("t (s)")
             ax.grid(alpha=0.3)
         self.lines = {}   # (plot key, column) -> matplotlib line
@@ -127,6 +132,7 @@ class Gui:
                 self.lines[name + "_" + key] = ax.plot([], [], ".", color=c, alpha=0.4, markersize=3, rasterized=True)[0]
         self.lines["distance_filt"] = self.ax_d.plot([], [], color="green", label="Kalman")[0]
         self.lines["distance"] = self.ax_d.plot([], [], ".", color="green", alpha=0.4, markersize=3)[0]
+        self.lines["speed_mps"] = self.ax_v.plot([], [], color="black")[0]
         self.ax_x.legend(loc="upper left", fontsize=8)
         self.canvas = FigureCanvasTkAgg(self.fig, master=tab)
         self.canvas.get_tk_widget().config(height=PLOT_HEIGHT)
@@ -290,7 +296,7 @@ class Gui:
         rows = [r for r, k in zip(rows, keep) if k]
         for key, line in self.lines.items():
             line.set_data(t, [r[key] for r in rows])
-        for ax in (self.ax_x, self.ax_y, self.ax_d):
+        for ax in (self.ax_x, self.ax_y, self.ax_d, self.ax_v):
             ax.relim()
             ax.autoscale_view()
         self.canvas.draw_idle()

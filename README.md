@@ -34,7 +34,9 @@ uv run app/main.py
 
 Switch the sensor on and make sure it is **not** connected to the Movella DOT phone app (only one connection at a time).
 
-**Live in the app:** the IMU row at the bottom of the Measurement tab scans for sensors on start. Pick yours by its MAC address (printed on the sensor and shown in the DOT app; the list is sorted by signal strength), click **Connect**, and the free acceleration is shown and plotted live.
+**Live in the app:** the IMU row at the bottom of the Measurement tab scans for sensors on start. Pick yours by its MAC address (printed on the sensor and shown in the DOT app; the list is sorted by signal strength), click **Connect**. Three live plots show, all in the sensor's own axes: the raw acceleration (with gravity, lying flat az ≈ +9.8 m/s²), the acceleration with gravity removed, and the angular velocity. Gravity is removed using the sensor's orientation, so it stays correct while the sled tilts; the sensor's own reading of gravity is calibrated automatically whenever it lies still.
+
+**Recording camera + IMU together:** connect the sensor first, then click **Start analysis**. Keep the sled still for the first 2 s (used to calibrate gravity and remove the sensor bias). When you click **Stop analysis**, the analysis folder gets `imu_raw.csv` and `meta.json` (time offset between camera and IMU) next to the video, and the **Analysis** tab shows both on one time axis.
 
 **From the command line**, from the repository root:
 
@@ -42,7 +44,7 @@ Switch the sensor on and make sure it is **not** connected to the Movella DOT ph
 uv run app/data_analysis.py 10
 ```
 
-This records 10 s of free acceleration over Bluetooth, saves it as `dot_<date>_<time>.csv` in the current folder, and prints the detected start and speed. Keep the sled still for the first 2 s; that window is used to remove the sensor bias.
+This records 10 s of orientation, acceleration and angular velocity (sensor axes, gravity included) over Bluetooth, saves it as `dot_<date>_<time>.csv` in the current folder, and prints the detected start and speed. Keep the sled still for the first 2 s; that window is used to calibrate gravity and remove the sensor bias.
 
 On macOS, the first run asks for Bluetooth permission for VS Code / Terminal. Allow it, otherwise no sensor is found.
 

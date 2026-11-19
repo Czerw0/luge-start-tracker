@@ -1,3 +1,4 @@
+import json
 import threading
 import time # for running the camera in a separate thread
 import tkinter as tk
@@ -12,6 +13,7 @@ from matplotlib.figure import Figure
 from PIL import Image, ImageTk
 
 from dashboard import Dashboard
+from data_analysis import samples_to_dataframe, save_imu
 from imu_panel import ImuPanel
 from video_analysis import MarkerTracker
 
@@ -203,6 +205,7 @@ class Gui:
         self.tracker = MarkerTracker()
         self.frozen = False
         self.mode = "recording"
+        self.imu_panel.start_recording()   # IMU samples are saved with the video when stopping
         self.run_thread(self.worker, camera)
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
@@ -263,18 +266,40 @@ class Gui:
                 self.update_plots()
                 self.start_button.config(state="normal")
                 self.stop_button.config(state="disabled")
+                imu_samples = self.imu_panel.stop_recording()
                 if self.error:
                     self.status.config(text="Error")
                     messagebox.showerror("Luge Start Tracker", self.error)
                     self.start_preview()
                 else:
-                    saved = f"Saved {len(self.rows)} frames to {self.folder}"
+                    saved = f"Saved {len(self.rows)} frames"
+                    saved += self.save_imu_recording(imu_samples) + f" to {self.folder}"
                     self.start_preview(keep_data=True)
                     self.status.config(text=saved)
         elif self.mode == "preview" and not alive and self.error:
             self.status.config(text=f"Camera unavailable: {self.error}")
             self.mode = "idle"
         self.window.after(10, self.poll)
+
+    def save_imu_recording(self, samples):
+        # imu_raw.csv + meta.json next to the video; returns text for the status line
+        if not samples:
+            return " (no IMU data: sensor not connected)"
+        imu = samples_to_dataframe(samples)
+        save_imu(imu, self.folder / "imu_raw.csv")
+        video_t0 = getattr(self.tracker, "t0", None)
+        imu_t0 = float(imu["t_host"].iloc[0])
+        meta = {
+            "imu_sensor": self.imu_panel.connected_mac(),
+            "imu_samples": len(imu),
+            # Both clocks are time.perf_counter() on this computer. IMU time 0 (first sample)
+            # is at video time imu_offset_s; Bluetooth latency (~tens of ms) is not removed.
+            "video_t0_host": video_t0,
+            "imu_t0_host": imu_t0,
+            "imu_offset_s": imu_t0 - video_t0 if video_t0 is not None else None,
+        }
+        (self.folder / "meta.json").write_text(json.dumps(meta, indent=2))
+        return f" + {len(imu)} IMU samples"
 
     def show(self, frame):
         # Scale to the largest size that fits next to the results panel

@@ -30,13 +30,22 @@ def load_analysis(folder):
             "imu_info": None, "imu_error": None, "markers": []}
     if (folder / "tracking.csv").exists():
         data["tracking"] = pd.read_csv(folder / "tracking.csv")
+    meta = json.loads((folder / "meta.json").read_text()) if (folder / "meta.json").exists() else {}
+    offset = meta.get("imu_offset_s") or 0.0   # IMU time 0 on the video time axis
     for name in IMU_FILES:
         if (folder / name).exists():
             try:
                 data["imu"] = load_imu(folder / name)
+                # The still window is relative to the IMU's own start, so analyse first ...
                 data["imu_result"], data["imu_info"] = analyse_start(data["imu"])
             except Exception as e:   # unknown format, no start found, ...: show what we have
                 data["imu_error"] = str(e)
+            # ... then move everything onto the video time axis
+            if data["imu"] is not None:
+                data["imu"]["t"] += offset
+            if data["imu_result"] is not None:
+                data["imu_result"]["t"] += offset
+                data["imu_info"]["t_start"] += offset
             break
     if (folder / "markers.json").exists():
         data["markers"] = json.loads((folder / "markers.json").read_text())
@@ -92,7 +101,6 @@ class Dashboard(ttk.Frame):
         super().__init__(master)
         self.analyses_dir = Path(analyses_dir)
         self.data = None
-        self.colorbar = None
 
         controls = ttk.Frame(self)
         controls.pack(fill="x", padx=10, pady=10)
@@ -110,9 +118,16 @@ class Dashboard(ttk.Frame):
         self.cards.pack(fill="x", padx=10)
 
         self.fig = Figure(figsize=(12, 6), dpi=100)
-        self.fig.subplots_adjust(left=0.06, right=0.98, bottom=0.08, top=0.95, wspace=0.22, hspace=0.4)
-        axes = self.fig.subplots(2, 3)
-        (self.ax_pos, self.ax_traj, self.ax_dist), (self.ax_speed, self.ax_acc, self.ax_gyro) = axes
+        self.fig.subplots_adjust(left=0.06, right=0.95, bottom=0.08, top=0.95, wspace=1.2, hspace=0.4)
+        # Top row: video (markers), bottom row: IMU. Kept in separate charts for now.
+        gs = self.fig.add_gridspec(2, 6)
+        self.ax_pos = self.fig.add_subplot(gs[0, 0:3])
+        self.ax_dist = self.fig.add_subplot(gs[0, 3:6])
+        self.ax_imu_v = self.fig.add_subplot(gs[1, 0:2])
+        self.ax_acc = self.fig.add_subplot(gs[1, 2:4])
+        self.ax_gyro = self.fig.add_subplot(gs[1, 4:6])
+        # Position (px, left axis) and speed (m/s, right axis) share one chart
+        self.ax_speed = self.ax_pos.twinx()
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -157,12 +172,12 @@ class Dashboard(ttk.Frame):
     def show_plots(self):
         d = self.data
         df = d["tracking"]
-        if self.colorbar is not None:   # ax.clear() would leave the old colorbar axes behind
-            self.colorbar.remove()
-            self.colorbar = None
         for ax in self.fig.axes:
             ax.clear()
-            ax.grid(alpha=0.3)
+            if ax is not self.ax_speed:   # one grid per chart (the speed axis sits on top of position)
+                ax.grid(alpha=0.3)
+        self.ax_speed.yaxis.tick_right()
+        self.ax_speed.yaxis.set_label_position("right")
 
         def no_data(ax, title, text="no data"):
             ax.set_title(title)
@@ -170,20 +185,11 @@ class Dashboard(ttk.Frame):
 
         if df is not None and df["x_filt"].notna().any():
             t = df["t"]
-            self.ax_pos.set_title("Marker position (Kalman)")
-            self.ax_pos.plot(t, df["x_filt"], label="x")
-            self.ax_pos.plot(t, df["y_filt"], label="y")
+            self.ax_pos.set_title("Marker position and speed")
+            self.ax_pos.plot(t, df["x_filt"], color="tab:blue", label="x (Kalman)")
+            self.ax_pos.plot(t, df["y_filt"], color="tab:orange", label="y (Kalman)")
             self.ax_pos.set_xlabel("t (s)")
-            self.ax_pos.set_ylabel("px")
-            self.ax_pos.legend(fontsize=8)
-
-            self.ax_traj.set_title("Trajectory (image)")
-            sc = self.ax_traj.scatter(df["x_filt"], df["y_filt"], c=t, s=4, cmap="viridis")
-            self.ax_traj.invert_yaxis()   # image y grows downwards
-            self.ax_traj.set_aspect("equal", adjustable="datalim")
-            self.ax_traj.set_xlabel("x (px)")
-            self.ax_traj.set_ylabel("y (px)")
-            self.colorbar = self.fig.colorbar(sc, ax=self.ax_traj, label="t (s)")
+            self.ax_pos.set_ylabel("position (px)")
 
             self.ax_dist.set_title("Distance between markers")
             self.ax_dist.plot(t, df["distance_filt"], label="Kalman")
@@ -194,23 +200,19 @@ class Dashboard(ttk.Frame):
 
             speed = tracking_speed(df)
             if speed is not None:
-                self.ax_speed.set_title("Speed")
-                self.ax_speed.plot(t, speed, label="video")
-                self.ax_speed.set_ylabel("m/s")
-            else:
-                no_data(self.ax_speed, "Speed", "no speed in this recording")
+                self.ax_speed.plot(t, speed, color="black", lw=1.2, label="speed, video (m/s)")
         else:
-            for ax, title in ((self.ax_pos, "Marker position"), (self.ax_traj, "Trajectory"),
-                              (self.ax_dist, "Distance between markers"), (self.ax_speed, "Speed")):
+            for ax, title in ((self.ax_pos, "Marker position and speed"),
+                              (self.ax_dist, "Distance between markers")):
                 no_data(ax, title, "no tracking data")
 
         result = d["imu_result"]
         if result is not None:
-            self.ax_speed.plot(result["t"], result["v"], label="IMU (integrated)")
-            self.ax_speed.set_title("Speed")
-            self.ax_speed.set_ylabel("m/s")
-            self.ax_speed.set_xlabel("t (s)")
-            self.ax_speed.legend(fontsize=8)
+            self.ax_imu_v.set_title("Speed (IMU, integrated)")
+            self.ax_imu_v.plot(result["t"], result["v"], color="tab:red", lw=1.2)
+            self.ax_imu_v.axhline(0, color="gray", lw=0.8)   # signed: < 0 = backwards
+            self.ax_imu_v.set_xlabel("t (s)")
+            self.ax_imu_v.set_ylabel("m/s")
             self.ax_acc.set_title("Forward acceleration (IMU)")
             self.ax_acc.plot(result["t"], result["a_fwd"], alpha=0.4, label="raw")
             self.ax_acc.plot(result["t"], result["a_filt"], label="low-pass")
@@ -219,6 +221,7 @@ class Dashboard(ttk.Frame):
             self.ax_acc.set_ylabel("m/s²")
             self.ax_acc.legend(fontsize=8)
         else:
+            no_data(self.ax_imu_v, "Speed (IMU, integrated)", d["imu_error"] or "no IMU file")
             no_data(self.ax_acc, "Forward acceleration (IMU)", d["imu_error"] or "no IMU file")
 
         imu = d["imu"]
@@ -232,9 +235,20 @@ class Dashboard(ttk.Frame):
         else:
             no_data(self.ax_gyro, "Angular velocity (IMU)", "no gyroscope data")
 
+        # Speed axis + one legend for both axes of the combined chart
+        if self.ax_speed.lines:
+            self.ax_speed.set_ylabel("speed (m/s)")
+            self.ax_speed.set_ylim(bottom=0)   # video speed is a magnitude, never negative
+        else:
+            self.ax_speed.set_yticks([])
+        handles = self.ax_pos.get_legend_handles_labels()
+        more = self.ax_speed.get_legend_handles_labels()
+        if handles[0] or more[0]:
+            self.ax_speed.legend(handles[0] + more[0], handles[1] + more[1], fontsize=8, loc="upper left")
+
         # User markers as vertical lines on the time plots
         for m in d["markers"]:
-            for ax in (self.ax_pos, self.ax_dist, self.ax_speed, self.ax_acc, self.ax_gyro):
+            for ax in (self.ax_pos, self.ax_dist, self.ax_imu_v, self.ax_acc, self.ax_gyro):
                 ax.axvline(m["t"], color="orange", ls=":")
             self.ax_pos.annotate(m.get("label", ""), (m["t"], 1), xycoords=("data", "axes fraction"),
                                  rotation=90, va="top", fontsize=8, color="darkorange")

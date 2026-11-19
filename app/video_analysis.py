@@ -288,6 +288,7 @@ class MarkerTracker:
         rows = []
         i = 0
         t0 = time.perf_counter()
+        self.t0 = t0   # host clock at video t = 0, saved in meta.json to sync the IMU
         # Process frames until stop_event is set or camera ends
         try:
             while stop_event is None or not stop_event.is_set():

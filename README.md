@@ -16,7 +16,11 @@ Luge start tracking: computer vision (OpenCV + YOLO) combined with data from a s
 ├── app/
 │   ├── main.py             # application entry point (tkinter GUI)
 │   ├── video_analysis.py   # video input and sled sticker tracking
-│   └── data_analysis.py    # IMU data loading and processing
+│   ├── data_analysis.py    # IMU data loading and processing
+│   ├── push_detection.py   # video/IMU fine sync and push detection
+│   └── dashboard.py        # Analysis tab
+├── notebooks/
+│   └── push_detection.ipynb   # how the sync and push detection were developed and tested
 └── analyses/               # saved analyses (created by the app, not committed)
 ```
 
@@ -47,6 +51,15 @@ uv run app/data_analysis.py 10
 This records 10 s of orientation, acceleration and angular velocity (sensor axes, gravity included) over Bluetooth, saves it as `dot_<date>_<time>.csv` in the current folder, and prints the detected start and speed. Keep the sled still for the first 2 s; that window is used to calibrate gravity and remove the sensor bias.
 
 On macOS, the first run asks for Bluetooth permission for VS Code / Terminal. Allow it, otherwise no sensor is found.
+
+### Push detection (Analysis tab)
+
+When an analysis is loaded, the app:
+- refines the camera/IMU sync by sliding the IMU position over the video position (the shift is shown in the **IMU sync** card);
+- detects pushes as peaks of the video position `x` (where the sled stops and turns), shown as red triangles; no camera calibration is needed;
+- with IMU data, marks the pause around each push in the acceleration plot (red bands; **Pushes seen by IMU** counts how many pushes the IMU confirms).
+
+**Save pushes as markers** writes the detected pushes to `markers.json` (`"source": "auto"`); manual markers are kept. The method and its tests are in `notebooks/push_detection.ipynb`.
 
 ## Setup from scratch
 

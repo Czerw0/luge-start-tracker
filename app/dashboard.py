@@ -9,6 +9,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 from data_analysis import analyse_start, load_imu
+from push_detection import find_pushes, refine_offset
 
 IMU_FILES = ("imu_raw.csv", "imu.csv")
 
@@ -27,7 +28,7 @@ def load_analysis(folder):
     # Read everything that exists in the folder; missing parts are None
     folder = Path(folder)
     data = {"folder": folder, "tracking": None, "imu": None, "imu_result": None,
-            "imu_info": None, "imu_error": None, "markers": []}
+            "imu_info": None, "imu_error": None, "markers": [], "sync": None, "pushes": []}
     if (folder / "tracking.csv").exists():
         data["tracking"] = pd.read_csv(folder / "tracking.csv")
     meta = json.loads((folder / "meta.json").read_text()) if (folder / "meta.json").exists() else {}
@@ -47,6 +48,18 @@ def load_analysis(folder):
                 data["imu_result"]["t"] += offset
                 data["imu_info"]["t_start"] += offset
             break
+    # Fine sync: slide the IMU position over the video position (see push_detection.refine_offset)
+    if data["tracking"] is not None and data["imu_result"] is not None:
+        try:
+            shift, r0, r = refine_offset(data["tracking"], data["imu_result"])
+            data["imu"]["t"] += shift
+            data["imu_result"]["t"] += shift
+            data["imu_info"]["t_start"] += shift
+            data["sync"] = {"shift_s": shift, "r_before": r0, "r": r}
+        except Exception as e:   # too short / no overlap: keep the computer-clock offset
+            data["imu_error"] = f"sync: {e}"
+    if data["tracking"] is not None:
+        data["pushes"] = find_pushes(data["tracking"], data["imu_result"])
     if (folder / "markers.json").exists():
         data["markers"] = json.loads((folder / "markers.json").read_text())
     if data["tracking"] is None and data["imu"] is None:
@@ -90,6 +103,12 @@ def summarise(data):
         out["Max speed (IMU)"] = f"{result['v'].max():.2f} m/s"
         out["Max accel. (IMU)"] = f"{result['a_filt'].abs().max():.1f} m/s²"
         out["IMU drift v_end"] = f"{info['v_end']:.2f} m/s"
+    if data["sync"] is not None:
+        out["IMU sync"] = f"{1000 * data['sync']['shift_s']:+.0f} ms (r {data['sync']['r']:.2f})"
+    pushes = data["pushes"]
+    out["Pushes (detected)"] = f"{len(pushes)}"
+    if pushes and "imu_pause" in pushes[0]:
+        out["Pushes seen by IMU"] = f"{sum(p['imu_pause'] is not None for p in pushes)}/{len(pushes)}"
     out["Markers"] = f"{len(data['markers'])}"
     return out
 
@@ -111,6 +130,7 @@ class Dashboard(ttk.Frame):
         self.combo.bind("<<ComboboxSelected>>", lambda e: self.load(self.analyses_dir / self.choice.get()))
         ttk.Button(controls, text="Refresh", command=self.refresh).pack(side="left", padx=5)
         ttk.Button(controls, text="Open folder...", command=self.browse).pack(side="left", padx=5)
+        ttk.Button(controls, text="Save pushes as markers", command=self.save_pushes).pack(side="left", padx=5)
         self.status = ttk.Label(controls, text="")
         self.status.pack(side="left", padx=15)
 
@@ -158,6 +178,18 @@ class Dashboard(ttk.Frame):
         self.status.config(text=str(folder))
         self.show_cards(summarise(self.data))
         self.show_plots()
+
+    def save_pushes(self):
+        # Write the detected pushes to markers.json (replaces earlier auto pushes, keeps manual markers)
+        if self.data is None:
+            return
+        folder = self.data["folder"]
+        kept = [m for m in self.data["markers"] if m.get("source") != "auto"]
+        auto = [{"t": round(p["t"], 3), "label": "push", "kind": "push", "source": "auto"}
+                for p in self.data["pushes"]]
+        (folder / "markers.json").write_text(json.dumps(kept + auto, indent=2))
+        self.load(folder)
+        self.status.config(text=f"Saved {len(auto)} pushes to {folder / 'markers.json'}")
 
     def show_cards(self, values):
         for child in self.cards.winfo_children():
@@ -245,6 +277,13 @@ class Dashboard(ttk.Frame):
         more = self.ax_speed.get_legend_handles_labels()
         if handles[0] or more[0]:
             self.ax_speed.legend(handles[0] + more[0], handles[1] + more[1], fontsize=8, loc="upper left")
+
+        # Detected pushes: red triangles on the position, red band = IMU pause around the push
+        for p in d["pushes"]:
+            if df is not None:
+                self.ax_pos.plot(p["t"], np.interp(p["t"], df["t"], df["x_filt"]), "rv")
+            if p.get("imu_pause"):
+                self.ax_acc.axvspan(*p["imu_pause"], color="red", alpha=0.15)
 
         # User markers as vertical lines on the time plots
         for m in d["markers"]:

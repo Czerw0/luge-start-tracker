@@ -22,6 +22,7 @@ from scipy.spatial.transform import Rotation
 
 AXES = ("x", "y", "z")
 G = 9.81   # nominal gravity; analyse_start measures the sensor's own value instead
+MAX_ORIENTATION_DRIFT_DEG = 1.0   # orientation counts as settled if its tilt changes less while still (seen: <=0.1° ok, 4° not)
 
 # Columns of every IMU DataFrame in this project. t = sensor time in s (starts at 0),
 # t_host = time.perf_counter() on this computer when the sample arrived (for syncing
@@ -258,6 +259,21 @@ def orientation(df):
     return Rotation.from_quat(df[["qx", "qy", "qz", "qw"]].to_numpy(float))
 
 
+def orientation_drift(df, t_still):
+    """How much the sensor's own tilt estimate changes while the sled rests (degrees).
+
+    The sled does not move in the still window, so the true tilt is constant. Right after the DOT is
+    switched on or reconnected its orientation filter may still be settling (seen: roll drifting from
+    -20° to -9° over 8 s). Gravity removed with such a quaternion leaves a fake, slowly changing
+    acceleration of several m/s². Settled recordings change by ~0.1° or less.
+    """
+    still = still_mask(df["t"].to_numpy(), t_still)
+    if still.sum() < 2:
+        return 0.0
+    g = orientation(df[still]).inv().apply([0.0, 0.0, 1.0])   # gravity direction in sensor axes
+    return float(np.degrees(np.arccos(np.clip(g[0] @ g[-1], -1.0, 1.0))))
+
+
 def estimate_gravity(df, t_still):
     """Gravity as THIS sensor measures it: mean |a| while the sled rests.
 
@@ -380,11 +396,13 @@ def analyse_start(df, fs=60.0, t_still=(0.3, 1.8), k=6.0, fc=15.0, forward=None)
     sensor reads exactly G at rest (fixes its scale error), then gravity is removed per
     sample in the sensor's axes; the rest of the still-window mean is the accelerometer
     bias, which lives in the sensor's axes too.
-    Without orientation (older files) the still-window mean removes bias and gravity
-    together, which is only right as long as the tilt does not change.
+    Without orientation (older files), or when the DOT orientation is still settling during the still
+    window (see orientation_drift), the still-window mean removes bias and gravity together, which is
+    only right as long as the tilt does not change.
     Returns (result DataFrame with t, lx, ly, lz, a_fwd, a_filt, v, x; info dict).
     """
-    if has_orientation(df):
+    drift = orientation_drift(df, t_still) if has_orientation(df) else None
+    if drift is not None and drift <= MAX_ORIENTATION_DRIFT_DEG:
         g = estimate_gravity(df, t_still)
         scaled = df.copy()
         scaled[["ax", "ay", "az"]] *= G / g   # sensor scale error, measured at rest
@@ -393,7 +411,8 @@ def analyse_start(df, fs=60.0, t_still=(0.3, 1.8), k=6.0, fc=15.0, forward=None)
     else:
         g = None
         lin = df[["ax", "ay", "az"]].to_numpy(float)
-        frame = "no orientation in data: still-window mean removed (tilt assumed constant)"
+        frame = ("no orientation in data" if drift is None else
+                 f"orientation not settled ({drift:.1f}° change while still), not used") +                 ": still-window mean removed (tilt assumed constant)"
     t, acc = resample_uniform(pd.DataFrame({"t": df["t"], "lx": lin[:, 0], "ly": lin[:, 1],
                                             "lz": lin[:, 2]}), fs, ("lx", "ly", "lz"))
     still = still_mask(t, t_still)
@@ -414,6 +433,7 @@ def analyse_start(df, fs=60.0, t_still=(0.3, 1.8), k=6.0, fc=15.0, forward=None)
     info = {
         "frame": frame,
         "g": g,                   # gravity measured by this sensor at rest (m/s²), None without orientation
+        "orientation_drift_deg": drift,   # tilt change of the DOT orientation while still, None without orientation
         "scale": G / g if g else None,   # factor applied to the acceleration
         "direction": direction,   # forward unit vector in the frame above
         "t_start": float(t[i0]),

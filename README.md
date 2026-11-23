@@ -40,6 +40,8 @@ Switch the sensor on and make sure it is **not** connected to the Movella DOT ph
 
 **Live in the app:** the IMU row at the bottom of the Measurement tab scans for sensors on start. Pick yours by its MAC address (printed on the sensor and shown in the DOT app; the list is sorted by signal strength), click **Connect**. Three live plots show, all in the sensor's own axes: the raw acceleration (with gravity, lying flat az ≈ +9.8 m/s²), the acceleration with gravity removed, and the angular velocity. Gravity is removed using the sensor's orientation, so it stays correct while the sled tilts; the sensor's own reading of gravity is calibrated automatically whenever it lies still.
 
+If the DOT's own orientation is still settling during the first 2 s (its tilt changes by more than 1° while the sled rests, e.g. right after switching the sensor on), it is not used: gravity is then removed with the still-window average, and the Analysis tab shows **IMU orientation: not settled**. Giving the sensor a few seconds on the sled before recording avoids this.
+
 **Recording camera + IMU together:** connect the sensor first, then click **Start analysis**. Keep the sled still for the first 2 s (used to calibrate gravity and remove the sensor bias). When you click **Stop analysis**, the analysis folder gets `imu_raw.csv` and `meta.json` (time offset between camera and IMU) next to the video, and the **Analysis** tab shows both on one time axis.
 
 **From the command line**, from the repository root:
@@ -55,11 +57,11 @@ On macOS, the first run asks for Bluetooth permission for VS Code / Terminal. Al
 ### Push detection (Analysis tab)
 
 When an analysis is loaded, the app:
-- refines the camera/IMU sync by sliding the IMU position over the video position (the shift is shown in the **IMU sync** card);
-- detects pushes as peaks of the video position `x` (where the sled stops and turns), shown as red triangles; no camera calibration is needed;
-- with IMU data, marks the pause around each push in the acceleration plot (red bands; **Pushes seen by IMU** counts how many pushes the IMU confirms).
+- refines the camera/IMU sync by sliding the IMU position over the video position (the shift is shown in the **IMU sync** card). It also finds out whether the sled moves to the right or to the left in the image (**Forward in video** card), so the camera can film from either side. Frames where the tracking is broken (a marker lost, or the distance between the two markers jumps or moves far from its value at rest, e.g. when the sled leaves the image and the tracker jumps to other objects) are left out. If video and IMU still do not match (r < 0.9), the sync is shown as FAILED and not applied;
+- detects pushes at the back turning points of the video position `x` (the sled stops at the back and is pushed forward), shown as red triangles; no camera calibration is needed. With IMU data the push time is moved to the IMU forward-acceleration peak next to it (red lines in the acceleration plot). Without IMU data the forward direction is unknown and assumed to be to the left (-x), as in the labelled recordings;
+- with IMU data, checks that the IMU shows a forward push there (acceleration peak ≥ 1 m/s²; **Pushes seen by IMU**).
 
-The push table lists each push with its strength: the largest forward speed during the stroke (from the lowest point before the push to the push), in m/s from the IMU or in px/s from the video when there is no IMU, and the same value in % of the strongest push of the recording (also shown next to the triangles). With IMU, only pushes confirmed by the IMU can set the 100 %.
+The push table lists each push with its strength: the largest forward speed during the stroke that follows the push (until the sled is furthest forward), in m/s from the IMU or in px/s from the video when there is no IMU, and the same value in % of the strongest push of the recording (also shown next to the triangles). With IMU, only pushes confirmed by the IMU can set the 100 %.
 
 **Save pushes as markers** writes the detected pushes to `markers.json` (`"source": "auto"`); manual markers are kept. The method and its tests are in `notebooks/push_detection.ipynb`.
 

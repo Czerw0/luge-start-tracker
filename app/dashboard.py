@@ -8,10 +8,11 @@ import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-from data_analysis import analyse_start, load_imu
-from push_detection import find_pushes, refine_offset
+from data_analysis import MAX_ORIENTATION_DRIFT_DEG, analyse_start, load_imu
+from push_detection import find_pushes, refine_offset, valid_frames
 
 IMU_FILES = ("imu_raw.csv", "imu.csv")
+MIN_SYNC_R = 0.9   # below this video and IMU do not show the same movement: sync not trusted (good recordings: 0.98-1.0)
 
 
 def find_analyses(root):
@@ -51,15 +52,20 @@ def load_analysis(folder):
     # Fine sync: slide the IMU position over the video position (see push_detection.refine_offset)
     if data["tracking"] is not None and data["imu_result"] is not None:
         try:
-            shift, r0, r = refine_offset(data["tracking"], data["imu_result"])
-            data["imu"]["t"] += shift
-            data["imu_result"]["t"] += shift
-            data["imu_info"]["t_start"] += shift
-            data["sync"] = {"shift_s": shift, "r_before": r0, "r": r}
+            shift, r0, r, direction = refine_offset(data["tracking"], data["imu_result"])
+            data["sync"] = {"shift_s": shift, "r_before": r0, "r": r, "direction": direction,
+                            "ok": r >= MIN_SYNC_R}
+            if data["sync"]["ok"]:
+                data["imu"]["t"] += shift
+                data["imu_result"]["t"] += shift
+                data["imu_info"]["t_start"] += shift
         except Exception as e:   # too short / no overlap: keep the computer-clock offset
             data["imu_error"] = f"sync: {e}"
     if data["tracking"] is not None:
-        data["pushes"] = find_pushes(data["tracking"], data["imu_result"])
+        if data["sync"] and data["sync"]["ok"]:
+            data["pushes"] = find_pushes(data["tracking"], data["imu_result"], data["sync"]["direction"])
+        else:   # no IMU or video and IMU do not match: video only, find_pushes' default direction
+            data["pushes"] = find_pushes(data["tracking"])
     if (folder / "markers.json").exists():
         data["markers"] = json.loads((folder / "markers.json").read_text())
     if data["tracking"] is None and data["imu"] is None:
@@ -104,11 +110,18 @@ def summarise(data):
         out["Max accel. (IMU)"] = f"{result['a_filt'].abs().max():.1f} m/s²"
         out["IMU drift v_end"] = f"{info['v_end']:.2f} m/s"
     if data["sync"] is not None:
-        out["IMU sync"] = f"{1000 * data['sync']['shift_s']:+.0f} ms (r {data['sync']['r']:.2f})"
+        if data["sync"]["ok"]:
+            out["IMU sync"] = f"{1000 * data['sync']['shift_s']:+.0f} ms (r {data['sync']['r']:.2f})"
+            out["Forward in video"] = "+x (right)" if data["sync"]["direction"] > 0 else "-x (left)"
+        else:
+            out["IMU sync"] = f"FAILED (r {data['sync']['r']:.2f}), not applied"
+    info = data["imu_info"]
+    if info is not None and info.get("orientation_drift_deg") is not None             and info["orientation_drift_deg"] > MAX_ORIENTATION_DRIFT_DEG:
+        out["IMU orientation"] = f"not settled ({info['orientation_drift_deg']:.1f}°), not used"
     pushes = data["pushes"]
     out["Pushes (detected)"] = f"{len(pushes)}"
-    if pushes and "imu_pause" in pushes[0]:
-        out["Pushes seen by IMU"] = f"{sum(p['imu_pause'] is not None for p in pushes)}/{len(pushes)}"
+    if pushes and pushes[0]["imu_ok"] is not None:
+        out["Pushes seen by IMU"] = f"{sum(p['imu_ok'] for p in pushes)}/{len(pushes)}"
     out["Markers"] = f"{len(data['markers'])}"
     return out
 
@@ -141,7 +154,7 @@ class Dashboard(ttk.Frame):
         columns = ("n", "t", "speed", "rel", "imu")
         self.push_table = ttk.Treeview(self, columns=columns, show="headings", height=5)
         for col, title, width in (("n", "#", 40), ("t", "t (s)", 80), ("speed", "max speed", 120),
-                                  ("rel", "% of strongest", 110), ("imu", "IMU pause", 90)):
+                                  ("rel", "% of strongest", 110), ("imu", "seen by IMU", 90)):
             self.push_table.heading(col, text=title)
             self.push_table.column(col, width=width, anchor="e")
         self.push_table.pack(fill="x", padx=10, pady=(8, 0))
@@ -204,7 +217,7 @@ class Dashboard(ttk.Frame):
     def show_push_table(self):
         self.push_table.delete(*self.push_table.get_children())
         for n, p in enumerate(self.data["pushes"], 1):
-            imu = {None: "no", True: "-"}.get(p.get("imu_pause", True), "yes")
+            imu = {None: "-", True: "yes", False: "no"}[p["imu_ok"]]
             self.push_table.insert("", "end", values=(
                 n, f"{p['t']:.2f}", f"{p['speed']:.2f} {p['unit']}" if p["unit"] == "m/s" else f"{p['speed']:.0f} {p['unit']}",
                 f"{p['rel']:.0f} %", imu))
@@ -240,6 +253,12 @@ class Dashboard(ttk.Frame):
             self.ax_pos.plot(t, df["y_filt"], color="tab:orange", label="y (Kalman)")
             self.ax_pos.set_xlabel("t (s)")
             self.ax_pos.set_ylabel("position (px)")
+            # y range from the trustworthy frames, so a lost marker (Kalman running off) does not squash the plot
+            ok = valid_frames(df)
+            if ok.any():
+                lo = min(df.loc[ok, "x_filt"].min(), df.loc[ok, "y_filt"].min())
+                hi = max(df.loc[ok, "x_filt"].max(), df.loc[ok, "y_filt"].max())
+                self.ax_pos.set_ylim(lo - 0.1 * (hi - lo), hi + 0.15 * (hi - lo))
 
             self.ax_dist.set_title("Distance between markers")
             self.ax_dist.plot(t, df["distance_filt"], label="Kalman")
@@ -296,7 +315,7 @@ class Dashboard(ttk.Frame):
         if handles[0] or more[0]:
             self.ax_speed.legend(handles[0] + more[0], handles[1] + more[1], fontsize=8, loc="upper left")
 
-        # Detected pushes: red triangles on the position, red band = IMU pause around the push
+        # Detected pushes: red triangles on the position, red lines on the IMU acceleration
         for p in d["pushes"]:
             if df is not None:
                 y = np.interp(p["t"], df["t"], df["x_filt"])
@@ -304,8 +323,8 @@ class Dashboard(ttk.Frame):
                 if np.isfinite(p["rel"]):
                     self.ax_pos.annotate(f"{p['rel']:.0f}%", (p["t"], y), textcoords="offset points",
                                          xytext=(0, 6), ha="center", fontsize=7, color="red")
-            if p.get("imu_pause"):
-                self.ax_acc.axvspan(*p["imu_pause"], color="red", alpha=0.15)
+            if p["imu_ok"] is not None:
+                self.ax_acc.axvline(p["t"], color="red", ls="-" if p["imu_ok"] else ":", lw=1)
 
         # User markers as vertical lines on the time plots
         for m in d["markers"]:

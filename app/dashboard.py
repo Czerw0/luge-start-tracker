@@ -137,6 +137,15 @@ class Dashboard(ttk.Frame):
         self.cards = ttk.Frame(self)
         self.cards.pack(fill="x", padx=10)
 
+        # One row per detected push: time, strength (largest forward speed), % of the strongest push
+        columns = ("n", "t", "speed", "rel", "imu")
+        self.push_table = ttk.Treeview(self, columns=columns, show="headings", height=5)
+        for col, title, width in (("n", "#", 40), ("t", "t (s)", 80), ("speed", "max speed", 120),
+                                  ("rel", "% of strongest", 110), ("imu", "IMU pause", 90)):
+            self.push_table.heading(col, text=title)
+            self.push_table.column(col, width=width, anchor="e")
+        self.push_table.pack(fill="x", padx=10, pady=(8, 0))
+
         self.fig = Figure(figsize=(12, 6), dpi=100)
         self.fig.subplots_adjust(left=0.06, right=0.95, bottom=0.08, top=0.95, wspace=1.2, hspace=0.4)
         # Top row: video (markers), bottom row: IMU. Kept in separate charts for now.
@@ -177,6 +186,7 @@ class Dashboard(ttk.Frame):
             return
         self.status.config(text=str(folder))
         self.show_cards(summarise(self.data))
+        self.show_push_table()
         self.show_plots()
 
     def save_pushes(self):
@@ -190,6 +200,14 @@ class Dashboard(ttk.Frame):
         (folder / "markers.json").write_text(json.dumps(kept + auto, indent=2))
         self.load(folder)
         self.status.config(text=f"Saved {len(auto)} pushes to {folder / 'markers.json'}")
+
+    def show_push_table(self):
+        self.push_table.delete(*self.push_table.get_children())
+        for n, p in enumerate(self.data["pushes"], 1):
+            imu = {None: "no", True: "-"}.get(p.get("imu_pause", True), "yes")
+            self.push_table.insert("", "end", values=(
+                n, f"{p['t']:.2f}", f"{p['speed']:.2f} {p['unit']}" if p["unit"] == "m/s" else f"{p['speed']:.0f} {p['unit']}",
+                f"{p['rel']:.0f} %", imu))
 
     def show_cards(self, values):
         for child in self.cards.winfo_children():
@@ -281,7 +299,11 @@ class Dashboard(ttk.Frame):
         # Detected pushes: red triangles on the position, red band = IMU pause around the push
         for p in d["pushes"]:
             if df is not None:
-                self.ax_pos.plot(p["t"], np.interp(p["t"], df["t"], df["x_filt"]), "rv")
+                y = np.interp(p["t"], df["t"], df["x_filt"])
+                self.ax_pos.plot(p["t"], y, "rv")
+                if np.isfinite(p["rel"]):
+                    self.ax_pos.annotate(f"{p['rel']:.0f}%", (p["t"], y), textcoords="offset points",
+                                         xytext=(0, 6), ha="center", fontsize=7, color="red")
             if p.get("imu_pause"):
                 self.ax_acc.axvspan(*p["imu_pause"], color="red", alpha=0.15)
 

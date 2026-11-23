@@ -59,6 +59,8 @@ When an analysis is loaded, the app:
 - detects pushes as peaks of the video position `x` (where the sled stops and turns), shown as red triangles; no camera calibration is needed;
 - with IMU data, marks the pause around each push in the acceleration plot (red bands; **Pushes seen by IMU** counts how many pushes the IMU confirms).
 
+The push table lists each push with its strength: the largest forward speed during the stroke (from the lowest point before the push to the push), in m/s from the IMU or in px/s from the video when there is no IMU, and the same value in % of the strongest push of the recording (also shown next to the triangles). With IMU, only pushes confirmed by the IMU can set the 100 %.
+
 **Save pushes as markers** writes the detected pushes to `markers.json` (`"source": "auto"`); manual markers are kept. The method and its tests are in `notebooks/push_detection.ipynb`.
 
 ## Setup from scratch

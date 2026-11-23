@@ -71,18 +71,51 @@ def pause_around(t, speed, t_push):
     return (float(in_pause.min()), float(in_pause.max())) if len(in_pause) else None
 
 
+def stroke_start(t, x_smooth, t_push, max_len_s=1.5):
+    """Start of the forward stroke that ends at t_push: lowest x in the max_len_s before the push."""
+    before = (t < t_push) & (t >= t_push - max_len_s)
+    if not before.any():
+        return None
+    return float(t[before][np.argmin(x_smooth[before])])
+
+
 def find_pushes(video, imu_result=None):
     """Pushes of one recording as a list of dicts.
 
     t: push time (peak of the video position, s on the video axis).
+    t_start: start of the stroke (lowest x before the push).
+    speed, unit: push strength = largest forward speed during the stroke. The stroke starts at rest
+        (turning point), so this is also the speed the push added (delta v). In m/s from the IMU
+        (high-passed speed, only a ~1 s window so drift stays small), else in px/s from the video.
+    rel: speed in % of the strongest push of the recording. With IMU only confirmed pushes set the
+        100 %, so a tracking jump cannot become the reference.
     With IMU (imu_result already synced): imu_pause = (start, end) of the IMU pause around the push,
     None if the IMU shows no pause there (then the video peak may be a tracking error).
     """
     video = video.dropna(subset=["x"])
     t_video = video.t.to_numpy()
-    pushes = [{"t": float(t)} for t in detect_pushes(t_video, video.x.to_numpy())]
+    x_smooth = savgol_filter(video.x.to_numpy(), 9, 2)
+    fps = (len(t_video) - 1) / (t_video[-1] - t_video[0])
+    speed_video = savgol_filter(video.x.to_numpy(), 9, 2, deriv=1) * fps   # px/s
     if imu_result is not None:
-        speed_imu = _highpass(imu_result.v.to_numpy(), fs=1 / np.median(np.diff(imu_result.t)))
-        for p in pushes:
-            p["imu_pause"] = pause_around(imu_result.t.to_numpy(), speed_imu, p["t"])
+        t_imu = imu_result.t.to_numpy()
+        speed_imu = _highpass(imu_result.v.to_numpy(), fs=1 / np.median(np.diff(t_imu)))
+
+    pushes = []
+    for t_push in detect_pushes(t_video, video.x.to_numpy()):
+        p = {"t": float(t_push), "t_start": stroke_start(t_video, x_smooth, t_push)}
+        start = p["t_start"] if p["t_start"] is not None else t_push - 1.0
+        if imu_result is not None:
+            p["imu_pause"] = pause_around(t_imu, speed_imu, t_push)
+            stroke = (t_imu >= start) & (t_imu <= t_push)
+            p["speed"], p["unit"] = float(speed_imu[stroke].max()) if stroke.any() else np.nan, "m/s"
+        else:
+            stroke = (t_video >= start) & (t_video <= t_push)
+            p["speed"], p["unit"] = float(speed_video[stroke].max()) if stroke.any() else np.nan, "px/s"
+        pushes.append(p)
+
+    reference = [p["speed"] for p in pushes if p.get("imu_pause", True) is not None and np.isfinite(p["speed"])]
+    best = max(reference) if reference else np.nan
+    for p in pushes:
+        p["rel"] = 100 * p["speed"] / best if best > 0 else np.nan
     return pushes

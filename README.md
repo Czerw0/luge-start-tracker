@@ -18,7 +18,8 @@ Luge start tracking: computer vision (OpenCV + YOLO) combined with data from a s
 │   ├── video_analysis.py   # video input and sled sticker tracking
 │   ├── data_analysis.py    # IMU data loading and processing
 │   ├── push_detection.py   # video/IMU fine sync and push detection
-│   └── dashboard.py        # Analysis tab
+│   ├── dashboard.py        # Analysis tab
+│   └── video_player.py     # video player of the Analysis tab
 ├── notebooks/
 │   └── push_detection.ipynb   # how the sync and push detection were developed and tested
 └── analyses/               # saved analyses (created by the app, not committed)
@@ -53,6 +54,13 @@ uv run app/data_analysis.py 10
 This records 10 s of orientation, acceleration and angular velocity (sensor axes, gravity included) over Bluetooth, saves it as `dot_<date>_<time>.csv` in the current folder, and prints the detected start and speed. Keep the sled still for the first 2 s; that window is used to calibrate gravity and remove the sensor bias.
 
 On macOS, the first run asks for Bluetooth permission for VS Code / Terminal. Allow it, otherwise no sensor is found.
+
+### Video player (Analysis tab)
+
+The saved `video.*` of the selected analysis plays on the left of the plots, on the same time axis as the signals (each frame uses its recorded time from `tracking.csv`, so an uneven live frame rate stays in sync). The current frame is a magenta vertical line on every plot, with a dot on the x position; the tracked sled position is circled in red on the video.
+
+- **Play/Pause** at 0.1x-1x speed, step **±1 / ±10** frames, drag the slider, or type a frame number and press **Go**.
+- Click a plot to jump the video to that time; click a row in the push table to jump to that push.
 
 ### Push detection (Analysis tab)
 

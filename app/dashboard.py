@@ -10,8 +10,10 @@ from matplotlib.figure import Figure
 
 from data_analysis import MAX_ORIENTATION_DRIFT_DEG, analyse_start, load_imu
 from push_detection import find_pushes, refine_offset, valid_frames
+from video_player import VideoPlayer
 
 IMU_FILES = ("imu_raw.csv", "imu.csv")
+VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv")
 MIN_SYNC_R = 0.9   # below this video and IMU do not show the same movement: sync not trusted (good recordings: 0.98-1.0)
 
 
@@ -66,6 +68,7 @@ def load_analysis(folder):
             data["pushes"] = find_pushes(data["tracking"], data["imu_result"], data["sync"]["direction"])
         else:   # no IMU or video and IMU do not match: video only, find_pushes' default direction
             data["pushes"] = find_pushes(data["tracking"])
+    data["video"] = next((p for p in sorted(folder.glob("video.*")) if p.suffix.lower() in VIDEO_EXTS), None)
     if (folder / "markers.json").exists():
         data["markers"] = json.loads((folder / "markers.json").read_text())
     if data["tracking"] is None and data["imu"] is None:
@@ -158,6 +161,15 @@ class Dashboard(ttk.Frame):
             self.push_table.heading(col, text=title)
             self.push_table.column(col, width=width, anchor="e")
         self.push_table.pack(fill="x", padx=10, pady=(8, 0))
+        self.push_table.bind("<<TreeviewSelect>>", self.on_push_selected)
+
+        # Video player (left) and plots (right); the sash between them can be dragged
+        body = ttk.PanedWindow(self, orient="horizontal")
+        body.pack(fill="both", expand=True, padx=10, pady=10)
+        self.player = VideoPlayer(body, on_frame=self.on_video_frame)
+        body.add(self.player, weight=2)
+        plots = ttk.Frame(body)
+        body.add(plots, weight=3)
 
         self.fig = Figure(figsize=(12, 6), dpi=100)
         self.fig.subplots_adjust(left=0.06, right=0.95, bottom=0.08, top=0.95, wspace=1.2, hspace=0.4)
@@ -170,8 +182,19 @@ class Dashboard(ttk.Frame):
         self.ax_gyro = self.fig.add_subplot(gs[1, 4:6])
         # Position (px, left axis) and speed (m/s, right axis) share one chart
         self.ax_speed = self.ax_pos.twinx()
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=plots)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        # Current video frame: vertical line on every time plot, redrawn with blitting so it can
+        # follow the playing video (full redraws are far too slow). Pattern from the matplotlib
+        # docs, "Faster rendering by using blitting":
+        # https://matplotlib.org/stable/users/explain/animations/blitting.html
+        self.cursors = []
+        self.cursor_dot = None
+        self.cursor_t = None
+        self.background = None
+        self.canvas.mpl_connect("draw_event", self.on_draw)
+        # Click on a plot: jump the video to that time
+        self.canvas.mpl_connect("button_press_event", self.on_plot_click)
 
         self.refresh()
 
@@ -201,6 +224,7 @@ class Dashboard(ttk.Frame):
         self.show_cards(summarise(self.data))
         self.show_push_table()
         self.show_plots()
+        self.load_video()
 
     def save_pushes(self):
         # Write the detected pushes to markers.json (replaces earlier auto pushes, keeps manual markers)
@@ -218,7 +242,7 @@ class Dashboard(ttk.Frame):
         self.push_table.delete(*self.push_table.get_children())
         for n, p in enumerate(self.data["pushes"], 1):
             imu = {None: "-", True: "yes", False: "no"}[p["imu_ok"]]
-            self.push_table.insert("", "end", values=(
+            self.push_table.insert("", "end", iid=str(n - 1), values=(
                 n, f"{p['t']:.2f}", f"{p['speed']:.2f} {p['unit']}" if p["unit"] == "m/s" else f"{p['speed']:.0f} {p['unit']}",
                 f"{p['rel']:.0f} %", imu))
 
@@ -326,6 +350,12 @@ class Dashboard(ttk.Frame):
             if p["imu_ok"] is not None:
                 self.ax_acc.axvline(p["t"], color="red", ls="-" if p["imu_ok"] else ":", lw=1)
 
+        # Cursor for the current video frame (animated: drawn only by draw_cursor, not by draw)
+        self.background = None
+        time_axes = (self.ax_pos, self.ax_dist, self.ax_imu_v, self.ax_acc, self.ax_gyro)
+        self.cursors = [ax.axvline(np.nan, color="magenta", lw=1.5, animated=True) for ax in time_axes]
+        self.cursor_dot = self.ax_pos.plot([], [], "o", color="magenta", markersize=7, animated=True)[0]
+
         # User markers as vertical lines on the time plots
         for m in d["markers"]:
             for ax in (self.ax_pos, self.ax_dist, self.ax_imu_v, self.ax_acc, self.ax_gyro):
@@ -333,3 +363,63 @@ class Dashboard(ttk.Frame):
             self.ax_pos.annotate(m.get("label", ""), (m["t"], 1), xycoords=("data", "axes fraction"),
                                  rotation=90, va="top", fontsize=8, color="darkorange")
         self.canvas.draw_idle()
+
+    # --- video player <-> plots ---
+
+    def load_video(self):
+        d = self.data
+        if d["video"] is None:
+            self.player.close("no video in this analysis")
+            return
+        df = d["tracking"]
+        overlay = None
+        if df is not None and {"frame", "x_filt", "y_filt"} <= set(df.columns):
+            pos = df.set_index("frame")[["x_filt", "y_filt"]]
+
+            def overlay(i):
+                # Tracked sled position of this frame, drawn on the video to check the tracking
+                if i not in pos.index or pos.loc[i].isna().any():
+                    return None
+                return pos.loc[i, "x_filt"], pos.loc[i, "y_filt"]
+        self.player.load(d["video"], tracking=df, overlay=overlay)
+
+    def on_video_frame(self, i, t):
+        self.cursor_t = t
+        self.draw_cursor()
+
+    def on_plot_click(self, event):
+        if event.inaxes is not None and event.xdata is not None:
+            self.player.pause()
+            self.player.seek_time(event.xdata)
+
+    def on_push_selected(self, event):
+        sel = self.push_table.selection()
+        if sel and self.data is not None:
+            self.player.pause()
+            self.player.seek_time(self.data["pushes"][int(sel[0])]["t"])
+
+    def on_draw(self, event):
+        # Full redraw (new data, resize): keep the plots without cursor as the blit background
+        self.background = self.canvas.copy_from_bbox(self.fig.bbox)
+        self.draw_cursor(blit=False)
+
+    def draw_cursor(self, blit=True):
+        if not self.cursors or self.cursor_t is None:
+            return
+        t = self.cursor_t
+        for line in self.cursors:
+            line.set_xdata([t, t])
+        df = self.data["tracking"] if self.data else None
+        if df is not None and df["x_filt"].notna().any():
+            ok = df["x_filt"].notna()
+            self.cursor_dot.set_data([t], [np.interp(t, df["t"][ok], df["x_filt"][ok])])
+        else:
+            self.cursor_dot.set_data([], [])
+        if blit:
+            if self.background is None:   # plots not drawn yet; on_draw will add the cursor
+                return
+            self.canvas.restore_region(self.background)
+        for artist in self.cursors + [self.cursor_dot]:
+            self.fig.draw_artist(artist)
+        if blit:
+            self.canvas.blit(self.fig.bbox)

@@ -62,7 +62,7 @@ When an analysis is loaded, the app:
 - detects pushes at the back turning points of the video position `x` (the sled stops at the back and is pushed forward), shown as red triangles; no camera calibration is needed. With IMU data the push time is moved to the IMU forward-acceleration peak next to it (red lines in the acceleration plot). Without IMU data the forward direction is unknown and assumed to be to the left (-x), as in the labelled recordings;
 - with IMU data, checks that the IMU shows a forward push there (acceleration peak ≥ 1 m/s²; **Pushes seen by IMU**).
 
-The push table lists each push with its strength: the largest forward speed during the stroke that follows the push (until the sled is furthest forward), in m/s from the IMU or in px/s from the video when there is no IMU, and the same value in % of the strongest push of the recording (also shown next to the triangles). With IMU, only pushes confirmed by the IMU can set the 100 %.
+The push table lists each push with its strength: the largest forward IMU speed (m/s) during the stroke that follows the push (until the sled is furthest forward), and the same value in % of the strongest push of the recording (also shown next to the triangles). Only pushes confirmed by the IMU can set the 100 %. No speed is taken from the video, so without IMU data the pushes are listed without a strength.
 
 **Save pushes as markers** writes the detected pushes to `markers.json` (`"source": "auto"`); manual markers are kept. The method and its tests are in `notebooks/push_detection.ipynb`.
 

@@ -6,7 +6,7 @@ Method and tests: notebooks/push_detection.ipynb.
   the video position x, where the forward acceleration peaks.
 - Video and IMU are synced by sliding the IMU position over the video position (correlation).
 - Everything on the video side works in pixels with relative thresholds, so the camera position
-  and the mm/px scale do not matter.
+  does not matter. No speed is taken from the video; push strength comes from the IMU only.
 """
 import numpy as np
 from scipy.signal import butter, filtfilt, find_peaks, savgol_filter
@@ -119,18 +119,16 @@ def find_pushes(video, imu_result=None, direction=-1):
     imu_ok: IMU shows a clear forward push there (acceleration peak >= MIN_PUSH_ACC);
         None without IMU. False = the video peak may be a tracking error.
     t_end: end of the forward stroke (furthest forward position within 1.5 s).
-    speed, unit: push strength = largest forward speed during the stroke. The stroke starts at rest,
-        so this is also the speed the push added (delta v). In m/s from the IMU (high-passed speed,
-        only a ~1.5 s window so drift stays small), else in px/s from the video.
-    rel: speed in % of the strongest push of the recording. With IMU only confirmed pushes set the
-        100 %, so a tracking jump cannot become the reference.
+    speed: push strength in m/s = largest forward IMU speed during the stroke. The stroke starts at
+        rest, so this is also the speed the push added (delta v). High-passed IMU speed, only a
+        ~1.5 s window so drift stays small. NaN without IMU (no speed is taken from the video).
+    rel: speed in % of the strongest push of the recording. Only confirmed pushes set the 100 %, so
+        a tracking jump cannot become the reference. NaN without IMU.
     """
     video = video.dropna(subset=["x"])   # detect on all tracked frames, then drop peaks on invalid frames
     t_video = video.t.to_numpy()
     x_forward = direction * video.x.to_numpy()   # grows when the sled moves forward
     x_smooth = savgol_filter(x_forward, 9, 2)
-    fps = (len(t_video) - 1) / (t_video[-1] - t_video[0])
-    speed_video = savgol_filter(x_forward, 9, 2, deriv=1) * fps   # px/s, positive = forward
     if imu_result is not None:
         t_imu = imu_result.t.to_numpy()
         a_imu = imu_result.a_filt.to_numpy()
@@ -141,7 +139,7 @@ def find_pushes(video, imu_result=None, direction=-1):
     for t_turn in detect_pushes(t_video, -x_forward):   # peaks of -x_forward = back turning points
         if not valid[np.argmin(np.abs(t_video - t_turn))]:
             continue   # peak on a frame with broken tracking (marker lost / other object): not a push
-        p = {"t_video": float(t_turn), "t": float(t_turn), "imu_ok": None,
+        p = {"t_video": float(t_turn), "t": float(t_turn), "imu_ok": None, "speed": np.nan,
              "t_end": stroke_end(t_video, x_smooth, t_turn)}
         end = p["t_end"] if p["t_end"] is not None else t_turn + 1.5
         if imu_result is not None:
@@ -153,10 +151,8 @@ def find_pushes(video, imu_result=None, direction=-1):
             else:
                 p["imu_ok"] = False
             stroke = (t_imu >= p["t"]) & (t_imu <= end)
-            p["speed"], p["unit"] = float(speed_imu[stroke].max()) if stroke.any() else np.nan, "m/s"
-        else:
-            stroke = (t_video >= t_turn) & (t_video <= end)
-            p["speed"], p["unit"] = float(speed_video[stroke].max()) if stroke.any() else np.nan, "px/s"
+            if stroke.any():
+                p["speed"] = float(speed_imu[stroke].max())
         pushes.append(p)
 
     reference = [p["speed"] for p in pushes if p["imu_ok"] is not False and np.isfinite(p["speed"])]

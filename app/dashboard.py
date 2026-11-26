@@ -76,13 +76,6 @@ def load_analysis(folder):
     return data
 
 
-def tracking_speed(df):
-    # Speed in m/s: use the recorded column if present, else None (older recordings)
-    if "speed_mps" in df and df["speed_mps"].notna().any():
-        return df["speed_mps"]
-    return None
-
-
 def summarise(data):
     # Label -> value text for the KPI cards
     out = {}
@@ -102,10 +95,6 @@ def summarise(data):
             out["y range"] = f"{y.max() - y.min():.0f} px"
             step = np.hypot(x.diff(), y.diff())
             out["Path length"] = f"{step.sum():.0f} px"
-        speed = tracking_speed(df)
-        if speed is not None:
-            out["Max speed (video)"] = f"{speed.max():.2f} m/s"
-            out["Mean speed (video)"] = f"{speed.mean():.2f} m/s"
     result, info = data["imu_result"], data["imu_info"]
     if result is not None:
         out["IMU start"] = f"{info['t_start']:.2f} s"
@@ -180,8 +169,6 @@ class Dashboard(ttk.Frame):
         self.ax_imu_v = self.fig.add_subplot(gs[1, 0:2])
         self.ax_acc = self.fig.add_subplot(gs[1, 2:4])
         self.ax_gyro = self.fig.add_subplot(gs[1, 4:6])
-        # Position (px, left axis) and speed (m/s, right axis) share one chart
-        self.ax_speed = self.ax_pos.twinx()
         self.canvas = FigureCanvasTkAgg(self.fig, master=plots)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
         # Current video frame: vertical line on every time plot, redrawn with blitting so it can
@@ -242,9 +229,10 @@ class Dashboard(ttk.Frame):
         self.push_table.delete(*self.push_table.get_children())
         for n, p in enumerate(self.data["pushes"], 1):
             imu = {None: "-", True: "yes", False: "no"}[p["imu_ok"]]
+            has_speed = np.isfinite(p["speed"])   # push strength comes from the IMU only
             self.push_table.insert("", "end", iid=str(n - 1), values=(
-                n, f"{p['t']:.2f}", f"{p['speed']:.2f} {p['unit']}" if p["unit"] == "m/s" else f"{p['speed']:.0f} {p['unit']}",
-                f"{p['rel']:.0f} %", imu))
+                n, f"{p['t']:.2f}", f"{p['speed']:.2f} m/s" if has_speed else "-",
+                f"{p['rel']:.0f} %" if np.isfinite(p["rel"]) else "-", imu))
 
     def show_cards(self, values):
         for child in self.cards.winfo_children():
@@ -261,10 +249,7 @@ class Dashboard(ttk.Frame):
         df = d["tracking"]
         for ax in self.fig.axes:
             ax.clear()
-            if ax is not self.ax_speed:   # one grid per chart (the speed axis sits on top of position)
-                ax.grid(alpha=0.3)
-        self.ax_speed.yaxis.tick_right()
-        self.ax_speed.yaxis.set_label_position("right")
+            ax.grid(alpha=0.3)
 
         def no_data(ax, title, text="no data"):
             ax.set_title(title)
@@ -272,11 +257,12 @@ class Dashboard(ttk.Frame):
 
         if df is not None and df["x_filt"].notna().any():
             t = df["t"]
-            self.ax_pos.set_title("Marker position and speed")
+            self.ax_pos.set_title("Marker position")
             self.ax_pos.plot(t, df["x_filt"], color="tab:blue", label="x (Kalman)")
             self.ax_pos.plot(t, df["y_filt"], color="tab:orange", label="y (Kalman)")
             self.ax_pos.set_xlabel("t (s)")
             self.ax_pos.set_ylabel("position (px)")
+            self.ax_pos.legend(fontsize=8, loc="upper left")
             # y range from the trustworthy frames, so a lost marker (Kalman running off) does not squash the plot
             ok = valid_frames(df)
             if ok.any():
@@ -290,12 +276,8 @@ class Dashboard(ttk.Frame):
             self.ax_dist.set_xlabel("t (s)")
             self.ax_dist.set_ylabel("px")
             self.ax_dist.legend(fontsize=8)
-
-            speed = tracking_speed(df)
-            if speed is not None:
-                self.ax_speed.plot(t, speed, color="black", lw=1.2, label="speed, video (m/s)")
         else:
-            for ax, title in ((self.ax_pos, "Marker position and speed"),
+            for ax, title in ((self.ax_pos, "Marker position"),
                               (self.ax_dist, "Distance between markers")):
                 no_data(ax, title, "no tracking data")
 
@@ -327,17 +309,6 @@ class Dashboard(ttk.Frame):
             self.ax_gyro.legend(fontsize=8)
         else:
             no_data(self.ax_gyro, "Angular velocity (IMU)", "no gyroscope data")
-
-        # Speed axis + one legend for both axes of the combined chart
-        if self.ax_speed.lines:
-            self.ax_speed.set_ylabel("speed (m/s)")
-            self.ax_speed.set_ylim(bottom=0)   # video speed is a magnitude, never negative
-        else:
-            self.ax_speed.set_yticks([])
-        handles = self.ax_pos.get_legend_handles_labels()
-        more = self.ax_speed.get_legend_handles_labels()
-        if handles[0] or more[0]:
-            self.ax_speed.legend(handles[0] + more[0], handles[1] + more[1], fontsize=8, loc="upper left")
 
         # Detected pushes: red triangles on the position, red lines on the IMU acceleration
         for p in d["pushes"]:

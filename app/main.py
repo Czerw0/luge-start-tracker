@@ -12,6 +12,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from PIL import Image, ImageTk
 
+from color_calibration import CalibrationTab, display_color, load_marker_colors
 from dashboard import Dashboard, DevelopmentTab
 from data_analysis import samples_to_dataframe, save_imu
 from imu_panel import ImuPanel
@@ -23,7 +24,6 @@ PLOT_HEIGHT = 260     # px height of the plots at the bottom
 PLOT_SECONDS = 10     # time window shown in the plots
 PLOT_INTERVAL = 0.6   # s between plot redraws; a matplotlib redraw blocks the video
 PREVIEW_ROWS = 600     # rows kept while only previewing
-PLOT_COLORS = {"GREEN": "green", "PINK": "deeppink"}
 
 
 def format_results(row, names):
@@ -90,9 +90,10 @@ class Gui:
         self.dashboard.on_load = self.development_tab.show
         if self.dashboard.data is not None:   # the newest recording was loaded on start
             self.development_tab.show(self.dashboard.data)
-        # Pick up a freshly saved recording when the user switches to the tab
-        self.tabs.bind("<<NotebookTabChanged>>",
-                       lambda e: self.dashboard.refresh() if self.tabs.select() == str(self.analysis_tab) else None)
+        # Calibration tab: dial in the marker colours (gets the camera while it is shown)
+        self.calibration_tab = CalibrationTab(self.tabs, on_saved=self.on_colors_changed)
+        self.tabs.add(self.calibration_tab, text="Calibration")
+        self.tabs.bind("<<NotebookTabChanged>>", self.on_tab_changed)
 
         self.poll()
         self.window.after(300, self.start_preview)   # show the camera right away
@@ -140,15 +141,10 @@ class Gui:
             ax.set_xlabel("t (s)")
             ax.grid(alpha=0.3)
         self.lines = {}   # (plot key, column) -> matplotlib line
-        for name in ("GREEN", "PINK"):
-            c = PLOT_COLORS.get(name, name)
-            for key, ax in (("x", self.ax_x), ("y", self.ax_y)):
-                self.lines[name + "_" + key + "_filt"] = ax.plot([], [], color=c, label=name + " (Kalman)")[0]
-                self.lines[name + "_" + key] = ax.plot([], [], ".", color=c, alpha=0.4, markersize=3, rasterized=True)[0]
+        self.build_marker_lines()
         self.lines["distance_filt"] = self.ax_d.plot([], [], color="green", label="Kalman")[0]
         self.lines["distance"] = self.ax_d.plot([], [], ".", color="green", alpha=0.4, markersize=3)[0]
         self.lines["speed_mps"] = self.ax_v.plot([], [], color="black")[0]
-        self.ax_x.legend(loc="upper left", fontsize=8)
         self.canvas = FigureCanvasTkAgg(self.fig, master=tab)
         self.canvas.get_tk_widget().config(height=PLOT_HEIGHT)
         self.canvas.get_tk_widget().grid(row=2, column=0, sticky="ew", padx=10, pady=10)
@@ -156,6 +152,40 @@ class Gui:
         # Bottom: live Movella DOT IMU (scan, connect, values, plot)
         self.imu_panel = ImuPanel(tab)
         self.imu_panel.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
+
+    def build_marker_lines(self):
+        # x / y plot lines for the current marker colours (rebuilt after a calibration)
+        for key in [k for k in self.lines if k.endswith(("_x", "_y", "_x_filt", "_y_filt"))
+                    and not k.startswith("mid_")]:
+            self.lines.pop(key).remove()
+        for name in load_marker_colors():
+            c = display_color(name)
+            for key, ax in (("x", self.ax_x), ("y", self.ax_y)):
+                self.lines[name + "_" + key + "_filt"] = ax.plot([], [], color=c, label=name + " (Kalman)")[0]
+                self.lines[name + "_" + key] = ax.plot([], [], ".", color=c, alpha=0.4, markersize=3, rasterized=True)[0]
+        self.ax_x.legend(loc="upper left", fontsize=8)
+
+    def on_colors_changed(self):
+        # A calibration was saved: plots follow the new colours; the preview restarts with
+        # them when the user leaves the Calibration tab
+        self.build_marker_lines()
+        self.rows = []
+
+    def on_tab_changed(self, event):
+        selected = self.tabs.select()
+        if selected == str(self.calibration_tab):
+            if self.mode == "recording":
+                self.calibration_tab.status.config(text="Stop the recording first, then come back here.")
+                return
+            self.stop_thread()   # hand the camera over to the calibration
+            self.mode = "idle"
+            self.calibration_tab.activate(self.camera_index() or 0)
+        else:
+            if self.calibration_tab.cap is not None:
+                self.calibration_tab.deactivate()
+                self.start_preview()   # camera back to the measurement preview (new colours)
+            if selected == str(self.analysis_tab):
+                self.dashboard.refresh()   # pick up a freshly saved recording
 
     def run_thread(self, target, *args):
         self.stop_event.clear()
@@ -340,6 +370,7 @@ class Gui:
         self.canvas.draw_idle()
 
     def close(self):
+        self.calibration_tab.deactivate()
         if self.thread is not None and self.thread.is_alive():
             self.stop_event.set()
             self.thread.join(timeout=3)

@@ -88,7 +88,10 @@ class MarkerTracker:
     def __init__(self, markers=None):
         # name - HSV ranges
         if markers is None:
-            markers = {"GREEN": GREEN, "PINK": PINK}
+            # Calibrated colours from marker_colors.json (Calibration tab), front marker first;
+            # GREEN / PINK defaults where nothing is calibrated
+            from color_calibration import load_marker_colors
+            markers = load_marker_colors()
         self.markers = dict(markers)
         self._tracks = {}  # name - Kalman filter, size, frames lost
         self._filt = {}    # name - filtered position, last frame

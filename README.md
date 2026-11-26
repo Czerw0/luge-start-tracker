@@ -55,6 +55,17 @@ This records 10 s of orientation, acceleration and angular velocity (sensor axes
 
 On macOS, the first run asks for Bluetooth permission for VS Code / Terminal. Allow it, otherwise no sensor is found.
 
+### Marker colour calibration (Calibration tab)
+
+The tracker finds the markers by colour. To tune the colours to your camera and light:
+
+1. Open the **Calibration** tab (it takes over the camera while it is open).
+2. Choose the marker (**Front** or **Back**) and its **base colour**.
+3. Click **Start calibration** and keep moving that marker in front of the camera for 6 s. Only the moving blob of that colour is used, so still objects of a similar colour are not mistaken for the marker.
+4. The fitted range is saved to `marker_colors.json` and used for all new tracking. The right image shows which pixels fall into the range: after calibrating, only the marker should be white.
+
+**Reset to default** returns the selected marker to the built-in colour (front GREEN, back PINK). Front and back must have different colours.
+
 ### Video player (Analysis tab)
 
 The saved `video.*` of the selected analysis plays on the left of the plots, on the same time axis as the signals (each frame uses its recorded time from `tracking.csv`, so an uneven live frame rate stays in sync). The current frame is a magenta vertical line on every plot, with a dot on the x position; the tracked sled position is circled in red on the video.

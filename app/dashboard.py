@@ -95,13 +95,6 @@ def summarise(data):
         out["Duration"] = f"{duration:.2f} s"
         out["Frame rate"] = f"{(len(df) - 1) / duration:.1f} fps" if duration > 0 else "-"
         out["Tracked"] = f"{100 * tracked.mean():.0f} %"
-        if tracked.any():
-            x = df["x_filt"][tracked]
-            y = df["y_filt"][tracked]
-            out["x range"] = f"{x.max() - x.min():.0f} px"
-            out["y range"] = f"{y.max() - y.min():.0f} px"
-            step = np.hypot(x.diff(), y.diff())
-            out["Path length"] = f"{step.sum():.0f} px"
         speed = tracking_speed(df)
         if speed is not None:
             out["Max speed (video)"] = f"{speed.max():.2f} m/s"
@@ -111,7 +104,6 @@ def summarise(data):
         out["IMU start"] = f"{info['t_start']:.2f} s"
         out["Max speed (IMU)"] = f"{result['v'].max():.2f} m/s"
         out["Max accel. (IMU)"] = f"{result['a_filt'].abs().max():.1f} m/s²"
-        out["IMU drift v_end"] = f"{info['v_end']:.2f} m/s"
     if data["sync"] is not None:
         if data["sync"]["ok"]:
             out["IMU sync"] = f"{1000 * data['sync']['shift_s']:+.0f} ms (r {data['sync']['r']:.2f})"
@@ -129,6 +121,51 @@ def summarise(data):
     return out
 
 
+def development_values(data):
+    # Label -> value text for the Development tab (diagnostics, not shown in the Analysis tab)
+    out = {}
+    df = data["tracking"]
+    tracked = df["x_filt"].notna() if df is not None and len(df) else None
+    if tracked is not None and tracked.any():
+        x = df["x_filt"][tracked]
+        y = df["y_filt"][tracked]
+        out["x range"] = f"{x.max() - x.min():.0f} px"
+        out["y range"] = f"{y.max() - y.min():.0f} px"
+        out["Path length"] = f"{np.hypot(x.diff(), y.diff()).sum():.0f} px"
+    else:
+        out["x range"] = out["y range"] = out["Path length"] = "no tracking data"
+    info = data["imu_info"]
+    out["IMU drift v_end"] = f"{info['v_end']:.2f} m/s" if info is not None else "no IMU analysis"
+    return out
+
+
+def render_cards(frame, values, columns=6):
+    # Replace the content of `frame` with one card per (label, value)
+    for child in frame.winfo_children():
+        child.destroy()
+    for i, (label, value) in enumerate(values.items()):
+        card = ttk.Frame(frame, relief="groove", padding=6)
+        card.grid(row=i // columns, column=i % columns, sticky="ew", padx=3, pady=3)
+        frame.columnconfigure(i % columns, weight=1)
+        ttk.Label(card, text=label).pack(anchor="w")
+        ttk.Label(card, text=value, font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
+
+
+class DevelopmentTab(ttk.Frame):
+    # Diagnostic values for the recording that is open in the Analysis tab
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.title = ttk.Label(self, text="Open a recording in the Analysis tab to see its values here.")
+        self.title.pack(anchor="w", padx=10, pady=10)
+        self.cards = ttk.Frame(self)
+        self.cards.pack(fill="x", padx=10)
+
+    def show(self, data):
+        self.title.config(text=f"Recording: {data['folder'].name}")
+        render_cards(self.cards, development_values(data), columns=4)
+
+
 class Dashboard(ttk.Frame):
     # Dashboard for one saved analysis: pick a folder, see KPI cards and plots
 
@@ -136,6 +173,7 @@ class Dashboard(ttk.Frame):
         super().__init__(master)
         self.analyses_dir = Path(analyses_dir)
         self.data = None
+        self.on_load = None   # called with the loaded data after every load
 
         controls = ttk.Frame(self)
         controls.pack(fill="x", padx=10, pady=10)
@@ -225,6 +263,8 @@ class Dashboard(ttk.Frame):
         self.show_push_table()
         self.show_plots()
         self.load_video()
+        if self.on_load is not None:   # e.g. the Development tab follows the open recording
+            self.on_load(self.data)
 
     def save_pushes(self):
         # Write the detected pushes to markers.json (replaces earlier auto pushes, keeps manual markers)
@@ -247,14 +287,7 @@ class Dashboard(ttk.Frame):
                 f"{p['rel']:.0f} %", imu))
 
     def show_cards(self, values):
-        for child in self.cards.winfo_children():
-            child.destroy()
-        for i, (label, value) in enumerate(values.items()):
-            card = ttk.Frame(self.cards, relief="groove", padding=6)
-            card.grid(row=i // 6, column=i % 6, sticky="ew", padx=3, pady=3)
-            self.cards.columnconfigure(i % 6, weight=1)
-            ttk.Label(card, text=label).pack(anchor="w")
-            ttk.Label(card, text=value, font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
+        render_cards(self.cards, values)
 
     def show_plots(self):
         d = self.data

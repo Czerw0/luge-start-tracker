@@ -12,7 +12,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from PIL import Image, ImageTk
 
-from dashboard import Dashboard
+from dashboard import Dashboard, DevelopmentTab
 from data_analysis import samples_to_dataframe, save_imu
 from imu_panel import ImuPanel
 from video_analysis import MarkerTracker
@@ -82,6 +82,14 @@ class Gui:
         self.tabs.add(self.analysis_tab, text="Analysis")
         self.dashboard = Dashboard(self.analysis_tab, ANALYSES_DIR)
         self.dashboard.pack(fill="both", expand=True)
+
+        # Development tab: diagnostics (x/y range, path length, IMU drift) for the
+        # recording that is open in the Analysis tab
+        self.development_tab = DevelopmentTab(self.tabs)
+        self.tabs.add(self.development_tab, text="Development")
+        self.dashboard.on_load = self.development_tab.show
+        if self.dashboard.data is not None:   # the newest recording was loaded on start
+            self.development_tab.show(self.dashboard.data)
         # Pick up a freshly saved recording when the user switches to the tab
         self.tabs.bind("<<NotebookTabChanged>>",
                        lambda e: self.dashboard.refresh() if self.tabs.select() == str(self.analysis_tab) else None)

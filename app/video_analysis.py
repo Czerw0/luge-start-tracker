@@ -1,18 +1,13 @@
 import csv
 import time
 from collections import deque, namedtuple
-from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pandas as pd
 
-pink_gijs = [246,94,148]
-pink_ff649d = [255,100,157]
-green_23cb7f = [35,203,127]
-
-PINK = [(np.array([159, 100, 100]), np.array([179, 255, 255]))]
+PINK =[(np.array([159, 100, 100]), np.array([179, 255, 255]))]
 GREEN = [(np.array([30, 60, 60]), np.array([90, 255, 255]))]
 
 MIN_AREA = 150
@@ -46,15 +41,6 @@ def round_sig(v, digits=3):
     if np.isnan(v) or v == 0:
         return v
     return float(round(v, digits - 1 - int(np.floor(np.log10(abs(v))))))
-
-
-def save_tracking(df, folder):
-    # Save table to <folder>/tracking.csv
-    folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / "tracking.csv"
-    df.to_csv(path, index=False)
-    return path
 
 
 def polygon_gap(a, b):
@@ -269,7 +255,7 @@ class MarkerTracker:
         return row
 
     def track_camera(self, camera_index=0, save_path=None, csv_path=None, on_frame=None,
-                     stop_event=None, preview=True):
+                     stop_event=None):
         # Track markers in a live camera, return DataFrame with results
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
@@ -316,12 +302,6 @@ class MarkerTracker:
                 i += 1
                 if on_frame is not None:
                     on_frame(frame, det, row)
-                if preview:
-                    cv2.imshow("Live tracking (q = stop)", self.draw(frame, det))
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
-        except KeyboardInterrupt:
-            pass
         # Release resources and return DataFrame
         finally:
             cap.release()
@@ -329,8 +309,6 @@ class MarkerTracker:
                 writer.release()
             if csv_file is not None:
                 csv_file.close()
-            if preview:
-                cv2.destroyAllWindows()
         return pd.DataFrame(rows)
 
     def draw(self, frame, detections):
@@ -366,13 +344,3 @@ class MarkerTracker:
             cv2.putText(out, f"{self.mm_per_px:.3f} mm/px", (15, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                         (255, 255, 255), 1)
         return out
-
-
-if __name__ == "__main__":
-    # Live recording to analyses/<date>_camera/
-    import sys
-    cam = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-    folder = Path(__file__).resolve().parent.parent / "analyses" / (datetime.now().strftime("%Y-%m-%d_%H%M%S") + "_camera")
-    folder.mkdir(parents=True, exist_ok=True)
-    df = MarkerTracker().track_camera(cam, save_path=folder / "video.mp4", csv_path=folder / "tracking.csv")
-    print(f"{len(df)} frames tracked, saved to {folder}")

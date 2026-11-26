@@ -218,7 +218,7 @@ class Gui:
     def preview_worker(self, camera):
         try:
             self.tracker.track_camera(camera, on_frame=self.on_preview_frame,
-                                      stop_event=self.stop_event, preview=False)
+                                      stop_event=self.stop_event)
         except Exception as e:
             self.error = str(e)
 
@@ -228,7 +228,7 @@ class Gui:
             self.tracker.track_camera(camera, save_path=self.folder / "video.mp4",
                                       csv_path=self.folder / "tracking.csv",
                                       on_frame=self.on_frame,
-                                      stop_event=self.stop_event, preview=False)
+                                      stop_event=self.stop_event)
         except Exception as e:
             self.error = str(e)
 

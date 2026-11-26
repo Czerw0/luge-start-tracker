@@ -16,7 +16,8 @@ Luge start tracking: computer vision (OpenCV + YOLO) combined with data from a s
 ├── app/
 │   ├── main.py             # application entry point (tkinter GUI)
 │   ├── video_analysis.py   # video input and sled sticker tracking
-│   ├── data_analysis.py    # IMU data loading and processing
+│   ├── data_analysis.py    # Movella DOT streaming, IMU data loading and processing
+│   ├── imu_panel.py        # live IMU panel of the Measurement tab
 │   ├── push_detection.py   # video/IMU fine sync and push detection
 │   ├── dashboard.py        # Analysis tab
 │   └── video_player.py     # video player of the Analysis tab
@@ -44,14 +45,6 @@ Switch the sensor on and make sure it is **not** connected to the Movella DOT ph
 If the DOT's own orientation is still settling during the first 2 s (its tilt changes by more than 1° while the sled rests, e.g. right after switching the sensor on), it is not used: gravity is then removed with the still-window average, and the Analysis tab shows **IMU orientation: not settled**. Giving the sensor a few seconds on the sled before recording avoids this.
 
 **Recording camera + IMU together:** connect the sensor first, then click **Start analysis**. Keep the sled still for the first 2 s (used to calibrate gravity and remove the sensor bias). When you click **Stop analysis**, the analysis folder gets `imu_raw.csv` and `meta.json` (time offset between camera and IMU) next to the video, and the **Analysis** tab shows both on one time axis.
-
-**From the command line**, from the repository root:
-
-```
-uv run app/data_analysis.py 10
-```
-
-This records 10 s of orientation, acceleration and angular velocity (sensor axes, gravity included) over Bluetooth, saves it as `dot_<date>_<time>.csv` in the current folder, and prints the detected start and speed. Keep the sled still for the first 2 s; that window is used to calibrate gravity and remove the sensor bias.
 
 On macOS, the first run asks for Bluetooth permission for VS Code / Terminal. Allow it, otherwise no sensor is found.
 

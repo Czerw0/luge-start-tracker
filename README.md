@@ -65,7 +65,7 @@ When an analysis is loaded, the app:
 
 The push table lists each push with its strength: the largest forward IMU speed (m/s) during the stroke that follows the push (until the sled is furthest forward), and the same value in % of the strongest push of the recording (also shown next to the triangles). Only pushes confirmed by the IMU can set the 100 %. No speed is taken from the video, so without IMU data the pushes are listed without a strength.
 
-**Save pushes as markers** writes the detected pushes to `markers.json` (`"source": "auto"`); manual markers are kept. The method and its tests are in `notebooks/push_detection.ipynb`.
+Markers already saved in an analysis's `markers.json` (e.g. the manual push labels) are shown as orange dotted lines on the plots. The method and its tests are in `notebooks/push_detection.ipynb`.
 
 ## Setup from scratch
 

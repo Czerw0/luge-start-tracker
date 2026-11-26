@@ -136,7 +136,6 @@ class Dashboard(ttk.Frame):
         self.combo.bind("<<ComboboxSelected>>", lambda e: self.load(self.analyses_dir / self.choice.get()))
         ttk.Button(controls, text="Refresh", command=self.refresh).pack(side="left", padx=5)
         ttk.Button(controls, text="Open folder...", command=self.browse).pack(side="left", padx=5)
-        ttk.Button(controls, text="Save pushes as markers", command=self.save_pushes).pack(side="left", padx=5)
         self.status = ttk.Label(controls, text="")
         self.status.pack(side="left", padx=15)
 
@@ -213,18 +212,6 @@ class Dashboard(ttk.Frame):
         self.show_push_table()
         self.show_plots()
         self.load_video()
-
-    def save_pushes(self):
-        # Write the detected pushes to markers.json (replaces earlier auto pushes, keeps manual markers)
-        if self.data is None:
-            return
-        folder = self.data["folder"]
-        kept = [m for m in self.data["markers"] if m.get("source") != "auto"]
-        auto = [{"t": round(p["t"], 3), "label": "push", "kind": "push", "source": "auto"}
-                for p in self.data["pushes"]]
-        (folder / "markers.json").write_text(json.dumps(kept + auto, indent=2))
-        self.load(folder)
-        self.status.config(text=f"Saved {len(auto)} pushes to {folder / 'markers.json'}")
 
     def show_push_table(self):
         self.push_table.delete(*self.push_table.get_children())

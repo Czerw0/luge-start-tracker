@@ -7,14 +7,20 @@ import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from scipy.signal import savgol_filter
 
-from data_analysis import MAX_ORIENTATION_DRIFT_DEG, analyse_start, load_imu
-from push_detection import find_pushes, refine_offset, valid_frames
+from data_analysis import MAX_ORIENTATION_DRIFT_DEG, analyse_start, load_imu, lowpass
+from push_detection import DEFAULT_DIRECTION, find_pushes, refine_offset, valid_frames
 from video_analysis import load_tracking
 from video_player import VideoPlayer
 
 IMU_FILES = ("imu_raw.csv", "imu.csv")
 VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv")
+NOISE_WINDOW_S = 0.3   # video noise = raw position minus a Savitzky-Golay smoothing over this window
+JUMP_PX = 50           # residual above this = tracking jump (wrong blob / lost marker); fast real
+                       # motion stays below ~30 px, measured jumps were 100-200 px
+IMU_STILL_S = (0.3, 1.8)   # still window after the IMU start (same as analyse_start's default)
+IMU_LOWPASS_HZ = 15.0      # same low-pass as analyse_start
 MIN_SYNC_R = 0.9   # below this video and IMU do not show the same movement: sync not trusted (good recordings: 0.98-1.0)
 
 
@@ -89,19 +95,11 @@ def summarise(data):
         out["Duration"] = f"{duration:.2f} s"
         out["Frame rate"] = f"{(len(df) - 1) / duration:.1f} fps" if duration > 0 else "-"
         out["Tracked"] = f"{100 * tracked.mean():.0f} %"
-        if tracked.any():
-            x = df["x_filt"][tracked]
-            y = df["y_filt"][tracked]
-            out["x range"] = f"{x.max() - x.min():.0f} px"
-            out["y range"] = f"{y.max() - y.min():.0f} px"
-            step = np.hypot(x.diff(), y.diff())
-            out["Path length"] = f"{step.sum():.0f} px"
     result, info = data["imu_result"], data["imu_info"]
     if result is not None:
         out["IMU start"] = f"{info['t_start']:.2f} s"
         out["Max speed (IMU)"] = f"{result['v'].max():.2f} m/s"
         out["Max accel. (IMU)"] = f"{result['a_filt'].abs().max():.1f} m/s²"
-        out["IMU drift v_end"] = f"{info['v_end']:.2f} m/s"
     if data["sync"] is not None:
         if data["sync"]["ok"]:
             out["IMU sync"] = f"{1000 * data['sync']['shift_s']:+.0f} ms (r {data['sync']['r']:.2f})"
@@ -119,6 +117,172 @@ def summarise(data):
     return out
 
 
+def marker_names(df):
+    # Marker names from the tracking columns, e.g. ["GREEN", "PINK"]
+    return [c[:-len("_x_filt")] for c in df.columns if c.endswith("_x_filt") and c != "mid_x_filt"]
+
+
+def video_noise(df):
+    # {"GREEN_x": residual, ...}: raw marker position minus a smoothed version (px, NaN where
+    # the marker was not found). What is left is the frame-to-frame jitter of the detection;
+    # very fast real motion leaks in a little, so the still parts give the cleanest value.
+    t = df["t"].to_numpy(float)
+    fps = (len(t) - 1) / (t[-1] - t[0]) if len(t) > 1 and t[-1] > t[0] else 30.0
+    window = max(5, int(round(NOISE_WINDOW_S * fps)) | 1)   # odd number of frames
+    out = {}
+    for name in marker_names(df):
+        for axis in ("x", "y"):
+            raw = df[f"{name}_{axis}"].to_numpy(float)
+            found = ~np.isnan(raw)
+            residual = np.full_like(raw, np.nan)
+            if found.sum() > window:
+                # Bridge short gaps for the filter only; residuals are kept where the marker was seen
+                filled = np.interp(np.arange(len(raw)), np.flatnonzero(found), raw[found])
+                residual[found] = (raw - savgol_filter(filled, window, 2))[found]
+            out[f"{name}_{axis}"] = residual
+    return out
+
+
+def robust_std(values):
+    # Standard deviation from the median absolute deviation: the typical jitter, not
+    # dominated by a few frames where the tracking jumped (plain std is)
+    v = values[np.isfinite(values)]
+    return 1.4826 * float(np.median(np.abs(v - np.median(v))))
+
+
+def imu_filtered(result):
+    # Gravity- and bias-free acceleration (sensor axes) after the 15 Hz low-pass, n x 3
+    fs = 1.0 / np.median(np.diff(result["t"]))
+    return lowpass(result[["lx", "ly", "lz"]].to_numpy(float), fs, fc=min(IMU_LOWPASS_HZ, 0.4 * fs))
+
+
+def development_values(data):
+    # Label -> value text for the Development tab (diagnostics, not shown in the Analysis tab)
+    out = {}
+    df = data["tracking"]
+    tracked = df["x_filt"].notna() if df is not None and len(df) else None
+    if tracked is not None and tracked.any():
+        x = df["x_filt"][tracked]
+        y = df["y_filt"][tracked]
+        out["x range"] = f"{x.max() - x.min():.0f} px"
+        out["y range"] = f"{y.max() - y.min():.0f} px"
+        out["Path length"] = f"{np.hypot(x.diff(), y.diff()).sum():.0f} px"
+    else:
+        out["x range"] = out["y range"] = out["Path length"] = "no tracking data"
+    info = data["imu_info"]
+    out["IMU drift v_end"] = f"{info['v_end']:.2f} m/s" if info is not None else "no IMU analysis"
+
+    if df is not None and len(df):
+        noise = video_noise(df)
+        for name in marker_names(df):
+            rx, ry = noise[f"{name}_x"], noise[f"{name}_y"]
+            if np.isfinite(rx).sum() < 2:
+                out[f"Video noise {name}"] = "not found"
+                continue
+            sx, sy = robust_std(rx), robust_std(ry)
+            jumps = int((np.hypot(rx, ry) > JUMP_PX).sum())
+            out[f"Video noise {name}"] = f"x {sx:.2f} / y {sy:.2f} px"
+            out[f"Tracking jumps {name}"] = f"{jumps} frames > {JUMP_PX} px"
+        d = df["distance"].dropna()
+        out["Marker distance"] = f"{d.mean():.1f} ± {d.std():.1f} px" if len(d) else "no data"
+    result = data["imu_result"]
+    if result is not None:
+        t = result["t"].to_numpy()
+        still = (t >= t[0] + IMU_STILL_S[0]) & (t <= t[0] + IMU_STILL_S[1])
+        if still.any():
+            std = result.loc[still, ["lx", "ly", "lz"]].std().to_numpy()
+            out["IMU noise at rest"] = f"{np.linalg.norm(std):.3f} m/s² (before low-pass)"
+    return out
+
+
+def render_cards(frame, values, columns=6):
+    # Replace the content of `frame` with one card per (label, value)
+    for child in frame.winfo_children():
+        child.destroy()
+    for i, (label, value) in enumerate(values.items()):
+        card = ttk.Frame(frame, relief="groove", padding=6)
+        card.grid(row=i // columns, column=i % columns, sticky="ew", padx=3, pady=3)
+        frame.columnconfigure(i % columns, weight=1)
+        ttk.Label(card, text=label).pack(anchor="w")
+        ttk.Label(card, text=value, font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
+
+
+class DevelopmentTab(ttk.Frame):
+    # Diagnostic values for the recording that is open in the Analysis tab
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.title = ttk.Label(self, text="Open a recording in the Analysis tab to see its values here.")
+        self.title.pack(anchor="w", padx=10, pady=10)
+        self.cards = ttk.Frame(self)
+        self.cards.pack(fill="x", padx=10)
+
+        self.fig = Figure(figsize=(12, 6), dpi=100)
+        self.fig.subplots_adjust(left=0.06, right=0.98, bottom=0.08, top=0.94, wspace=0.18, hspace=0.42)
+        (self.ax_imu_raw, self.ax_imu_filt), (self.ax_noise, self.ax_dist) = self.fig.subplots(2, 2)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+
+    def show(self, data):
+        self.title.config(text=f"Recording: {data['folder'].name}")
+        render_cards(self.cards, development_values(data), columns=4)
+        self.show_plots(data)
+
+    def show_plots(self, data):
+        for ax in self.fig.axes:
+            ax.clear()
+            ax.grid(alpha=0.3)
+            ax.set_xlabel("t (s)")
+
+        def no_data(ax, title, text):
+            ax.set_title(title)
+            ax.text(0.5, 0.5, text, ha="center", va="center", transform=ax.transAxes, color="gray")
+
+        colors = {"x": "tab:red", "y": "tab:green", "z": "tab:blue"}
+        imu, result = data["imu"], data["imu_result"]
+        title = "IMU before filtering: raw acceleration (sensor axes, with gravity)"
+        if imu is not None:
+            self.ax_imu_raw.set_title(title, fontsize=10)
+            for axis, c in colors.items():
+                self.ax_imu_raw.plot(imu["t"], imu["a" + axis], color=c, lw=0.8, label="a" + axis)
+            self.ax_imu_raw.set_ylabel("m/s²")
+            self.ax_imu_raw.legend(fontsize=8, loc="upper right")
+        else:
+            no_data(self.ax_imu_raw, title, "no IMU file")
+
+        title = f"IMU after filtering: gravity + bias removed, low-pass {IMU_LOWPASS_HZ:.0f} Hz"
+        if result is not None:
+            self.ax_imu_filt.set_title(title, fontsize=10)
+            filt = imu_filtered(result)
+            for i, (axis, c) in enumerate(colors.items()):
+                self.ax_imu_filt.plot(result["t"], result["l" + axis], color=c, lw=0.6, alpha=0.3)
+                self.ax_imu_filt.plot(result["t"], filt[:, i], color=c, lw=1.0, label="a" + axis)
+            self.ax_imu_filt.set_ylabel("m/s²  (faint = before low-pass)")
+            self.ax_imu_filt.legend(fontsize=8, loc="upper right")
+        else:
+            no_data(self.ax_imu_filt, title, data["imu_error"] or "no IMU file")
+
+        df = data["tracking"]
+        title = f"Video noise: raw position minus smoothed ({NOISE_WINDOW_S:.1f} s)"
+        if df is not None and df["x_filt"].notna().any():
+            self.ax_noise.set_title(title, fontsize=10)
+            for name, residual in video_noise(df).items():
+                self.ax_noise.plot(df["t"], residual, lw=0.7,
+                                   ls="-" if name.endswith("_x") else ":", label=name)
+            self.ax_noise.set_ylabel("px")
+            self.ax_noise.legend(fontsize=8, loc="upper right", ncol=2)
+
+            self.ax_dist.set_title("Distance between markers", fontsize=10)
+            self.ax_dist.plot(df["t"], df["distance"], ".", ms=2, alpha=0.4, color="tab:green", label="centres, raw")
+            self.ax_dist.plot(df["t"], df["distance_filt"], color="tab:green", lw=1, label="centres, Kalman")
+            self.ax_dist.set_ylabel("px")
+            self.ax_dist.legend(fontsize=8, loc="upper right")
+        else:
+            no_data(self.ax_noise, title, "no tracking data")
+            no_data(self.ax_dist, "Distance between markers", "no tracking data")
+        self.canvas.draw_idle()
+
+
 class Dashboard(ttk.Frame):
     # Dashboard for one saved analysis: pick a folder, see KPI cards and plots
 
@@ -126,6 +290,7 @@ class Dashboard(ttk.Frame):
         super().__init__(master)
         self.analyses_dir = Path(analyses_dir)
         self.data = None
+        self.on_load = None   # called with the loaded data after every load
 
         controls = ttk.Frame(self)
         controls.pack(fill="x", padx=10, pady=10)
@@ -155,8 +320,16 @@ class Dashboard(ttk.Frame):
         # Video player (left) and plots (right); the sash between them can be dragged
         body = ttk.PanedWindow(self, orient="horizontal")
         body.pack(fill="both", expand=True, padx=10, pady=10)
-        self.player = VideoPlayer(body, on_frame=self.on_video_frame)
-        body.add(self.player, weight=2)
+        video_col = ttk.Frame(body)
+        body.add(video_col, weight=2)
+        # Above the video: forward direction of the sled in the image
+        self.direction_label = tk.Label(video_col, text="", font=("TkDefaultFont", 20, "bold"))
+        self.direction_label.pack(fill="x")
+        self.player = VideoPlayer(video_col, on_frame=self.on_video_frame)
+        self.player.pack(fill="both", expand=True)
+        # Below the video: one button per detected push, jumps the video there
+        self.push_buttons = ttk.Frame(video_col)
+        self.push_buttons.pack(fill="x", pady=(4, 0))
         plots = ttk.Frame(body)
         body.add(plots, weight=3)
 
@@ -212,6 +385,10 @@ class Dashboard(ttk.Frame):
         self.show_push_table()
         self.show_plots()
         self.load_video()
+        self.show_direction()
+        self.show_push_buttons()
+        if self.on_load is not None:   # e.g. the Development tab follows the open recording
+            self.on_load(self.data)
 
     def show_push_table(self):
         self.push_table.delete(*self.push_table.get_children())
@@ -223,14 +400,7 @@ class Dashboard(ttk.Frame):
                 f"{p['rel']:.0f} %" if np.isfinite(p["rel"]) else "-", imu))
 
     def show_cards(self, values):
-        for child in self.cards.winfo_children():
-            child.destroy()
-        for i, (label, value) in enumerate(values.items()):
-            card = ttk.Frame(self.cards, relief="groove", padding=6)
-            card.grid(row=i // 6, column=i % 6, sticky="ew", padx=3, pady=3)
-            self.cards.columnconfigure(i % 6, weight=1)
-            ttk.Label(card, text=label).pack(anchor="w")
-            ttk.Label(card, text=value, font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
+        render_cards(self.cards, values)
 
     def show_plots(self):
         d = self.data
@@ -341,6 +511,36 @@ class Dashboard(ttk.Frame):
                     return None
                 return pos.loc[i, "x_filt"], pos.loc[i, "y_filt"]
         self.player.load(d["video"], tracking=df, overlay=overlay)
+
+    def show_direction(self):
+        # Arrow pointing the way the sled moves forward in the video
+        sync = self.data["sync"]
+        if self.data["tracking"] is None:
+            self.direction_label.config(text="")
+            return
+        if sync is not None and sync["ok"]:
+            direction, note, color = sync["direction"], "from IMU sync", "black"
+        else:
+            direction, note, color = DEFAULT_DIRECTION, "assumed, no IMU sync", "gray"
+        arrow = "forward  ⟶" if direction > 0 else "⟵  forward"
+        self.direction_label.config(text=f"{arrow}   ({note})", fg=color)
+
+    def show_push_buttons(self):
+        for child in self.push_buttons.winfo_children():
+            child.destroy()
+        pushes = self.data["pushes"]
+        if not pushes:
+            ttk.Label(self.push_buttons, text="No pushes detected").pack(side="left")
+            return
+        ttk.Label(self.push_buttons, text="Jump to:").pack(side="left", padx=(0, 4))
+        for n, p in enumerate(pushes):
+            ttk.Button(self.push_buttons, text=f"Push {n + 1} · {p['t']:.2f} s",
+                       command=lambda n=n: self.jump_to_push(n)).pack(side="left", padx=2)
+
+    def jump_to_push(self, n):
+        self.player.pause()
+        self.player.seek_time(self.data["pushes"][n]["t"])
+        self.push_table.selection_set(str(n))   # highlight the same push in the table
 
     def on_video_frame(self, i, t):
         self.cursor_t = t

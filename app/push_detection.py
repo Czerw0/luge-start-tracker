@@ -19,6 +19,7 @@ MAX_SHIFT_S = 0.5      # largest sync correction that is searched
 PROMINENCE = 0.2       # a push peak must stand out by 20 % of the movement range (tested 0.15-0.3: same result)
 MIN_GAP_S = 1.0        # at least this much time between two pushes
 MIN_PUSH_ACC = 1.0     # m/s², IMU forward acceleration that counts as a push (pushes seen: 1.6-7 m/s²)
+DEFAULT_DIRECTION = -1 # forward direction in the image assumed without IMU sync (-x, as in the labelled recordings)
 
 
 def _highpass(y, fs=FS):
@@ -90,7 +91,7 @@ def stroke_end(t, x_forward, t_push, max_len_s=1.5):
     return float(t[after][i])
 
 
-def find_pushes(video, imu_result=None, direction=-1):
+def find_pushes(video, imu_result=None, direction=DEFAULT_DIRECTION):
     """Pushes of one recording as a list of dicts.
 
     A push starts at the BACK turning point: the sled stops at the back and is pushed forward; this is

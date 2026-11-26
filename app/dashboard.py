@@ -10,6 +10,7 @@ from matplotlib.figure import Figure
 
 from data_analysis import MAX_ORIENTATION_DRIFT_DEG, analyse_start, load_imu
 from push_detection import find_pushes, refine_offset, valid_frames
+from video_analysis import load_tracking
 from video_player import VideoPlayer
 
 IMU_FILES = ("imu_raw.csv", "imu.csv")
@@ -33,7 +34,7 @@ def load_analysis(folder):
     data = {"folder": folder, "tracking": None, "imu": None, "imu_result": None,
             "imu_info": None, "imu_error": None, "markers": [], "sync": None, "pushes": []}
     if (folder / "tracking.csv").exists():
-        data["tracking"] = pd.read_csv(folder / "tracking.csv")
+        data["tracking"] = load_tracking(folder / "tracking.csv")   # video signals end where the sled leaves the frame
     meta = json.loads((folder / "meta.json").read_text()) if (folder / "meta.json").exists() else {}
     offset = meta.get("imu_offset_s") or 0.0   # IMU time 0 on the video time axis
     for name in IMU_FILES:

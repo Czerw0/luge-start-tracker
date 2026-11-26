@@ -17,8 +17,48 @@ MAX_LOST_FRAMES = 10
 PROCESS_NOISE = (1, 1, 25, 25) # 1 - 1 px/frame, 25 px/frame^2
 MEASUREMENT_NOISE = 9
 
+# Sled leaving the frame (tested on the saved recordings): the distance between the two markers
+# varies ~1 % at rest and up to ±11 % while the sled moves (perspective). When the sled leaves,
+# a marker is lost or the tracker jumps to background objects.
+REST_S = 2.0           # first seconds of a recording: sled at rest, reference distance
+EXIT_TOLERANCE = 0.2   # a frame is invalid if a marker is missing or the distance is >20 % off the reference
+EXIT_TIME_S = 0.3      # invalid this long in a row = the sled has left; shorter dropouts (motion blur) are ignored
+
 # cx, cy: centroid, area: px², bbox: (x, y, w, h); all in full-res px
 Detection = namedtuple("Detection", "cx cy area bbox")
+
+
+def valid_frames(df):
+    """Frames where the tracking can be trusted: both markers found and their distance within
+    EXIT_TOLERANCE of the distance at rest (median of the first REST_S seconds)."""
+    d = df["distance"]
+    rest = d[df["t"] < df["t"].iloc[0] + REST_S].median()
+    return d.notna() & ((d - rest).abs() <= EXIT_TOLERANCE * rest)
+
+
+def exit_time(df):
+    """Time when the sled has left the frame: the first invalid frame (see valid_frames) after which
+    no valid frame follows for at least EXIT_TIME_S. None if the sled stays in view."""
+    t = df["t"].to_numpy()
+    valid = valid_frames(df).to_numpy()
+    good_t = np.append(t[valid], np.inf)
+    next_good = good_t[np.searchsorted(good_t, t, side="right")]   # next valid frame after each frame
+    exits = ~valid & (next_good - t >= EXIT_TIME_S)
+    return float(t[np.argmax(exits)]) if exits.any() else None
+
+
+def load_tracking(path):
+    """Read a tracking.csv and end the video signals where the sled leaves the frame.
+
+    From exit_time() on every column except frame and t is NaN, so plots, sync and push detection
+    stop there (the background objects tracked afterwards are noise). All rows are kept, so the
+    per-frame times still match the video.
+    """
+    df = pd.read_csv(path)
+    t_exit = exit_time(df)
+    if t_exit is not None:
+        df.loc[df["t"] >= t_exit, df.columns.difference(["frame", "t"])] = np.nan
+    return df
 
 
 def new_kalman(x, y):

@@ -11,14 +11,14 @@ Method and tests: notebooks/push_detection.ipynb.
 import numpy as np
 from scipy.signal import butter, filtfilt, find_peaks, savgol_filter
 
+from video_analysis import valid_frames   # one rule for trustworthy frames (also imported from here by dashboard)
+
 FS = 60.0              # common sample rate for the sync, Hz
 HIGHPASS_HZ = 0.2      # removes IMU drift / position trend, keeps the movement (~0.4 Hz and faster)
 MAX_SHIFT_S = 0.5      # largest sync correction that is searched
 PROMINENCE = 0.2       # a push peak must stand out by 20 % of the movement range (tested 0.15-0.3: same result)
 MIN_GAP_S = 1.0        # at least this much time between two pushes
 MIN_PUSH_ACC = 1.0     # m/s², IMU forward acceleration that counts as a push (pushes seen: 1.6-7 m/s²)
-MAX_GAP_ERROR = 0.3    # a frame is valid if both markers are found and their distance is within 30 % of its local median
-MAX_GAP_DRIFT = 1.0    # ... and at most 100 % away from the distance at rest (seen: wrong objects at 4-5x)
 
 
 def _highpass(y, fs=FS):
@@ -28,27 +28,6 @@ def _highpass(y, fs=FS):
 
 def _zscore(y):
     return (y - y.mean()) / y.std()
-
-
-def valid_frames(video):
-    """Frames where the tracking can be trusted: both markers found and their distance normal.
-
-    When the sled leaves the image or a marker is lost, the tracker can jump to other yellow objects;
-    the distance between the two markers then becomes wrong or missing. Two checks:
-    - within MAX_GAP_ERROR of the median distance of the surrounding second (rolling; perspective can
-      change it slowly), catches short jumps;
-    - within MAX_GAP_DRIFT of the distance in the first 2 s (sled at rest), catches the tracker staying
-      on wrong objects, where the rolling median adapts to the wrong distance.
-    """
-    if "distance" not in video:
-        return video.x.notna()
-    d = video.distance
-    local = d.rolling(31, center=True, min_periods=5).median()
-    start = d[video.t < video.t.iloc[0] + 2.0].median()
-    ok = video.x.notna() & d.notna() & ((d - local).abs() <= MAX_GAP_ERROR * local)
-    if np.isfinite(start):
-        ok &= (d - start).abs() <= MAX_GAP_DRIFT * start
-    return ok
 
 
 def refine_offset(video, imu_result):
@@ -97,11 +76,18 @@ def detect_pushes(t, x):
 
 
 def stroke_end(t, x_forward, t_push, max_len_s=1.5):
-    """End of the forward stroke that starts at t_push: furthest forward position in the next max_len_s."""
+    """End of the forward stroke that starts at t_push: furthest forward position in the next max_len_s.
+
+    None if unknown: no frames after the push, or the video signal ends (sled left the frame) while
+    the sled is still moving forward, i.e. the furthest position is the last tracked frame.
+    """
     after = (t > t_push) & (t <= t_push + max_len_s)
     if not after.any():
         return None
-    return float(t[after][np.argmax(x_forward[after])])
+    i = np.argmax(x_forward[after])
+    if t[after][i] == t[-1] and t[-1] < t_push + max_len_s:
+        return None
+    return float(t[after][i])
 
 
 def find_pushes(video, imu_result=None, direction=-1):
@@ -118,10 +104,12 @@ def find_pushes(video, imu_result=None, direction=-1):
         to t_video (-0.3 ... +0.5 s), so the marker sits on the push itself; else t_video.
     imu_ok: IMU shows a clear forward push there (acceleration peak >= MIN_PUSH_ACC);
         None without IMU. False = the video peak may be a tracking error.
-    t_end: end of the forward stroke (furthest forward position within 1.5 s).
-    speed: push strength in m/s = largest forward IMU speed during the stroke. The stroke starts at
-        rest, so this is also the speed the push added (delta v). High-passed IMU speed, only a
-        ~1.5 s window so drift stays small. NaN without IMU (no speed is taken from the video).
+    t_end: end of the forward stroke (furthest forward position within 1.5 s); None if the video ends
+        during the stroke (see stroke_end).
+    speed: push strength in m/s = largest forward IMU speed during the stroke (until t_end, or 1.5 s
+        after the push if t_end is None; the IMU stays valid after the sled leaves the frame). The
+        stroke starts at rest, so this is also the speed the push added (delta v). High-passed IMU
+        speed, only a ~1.5 s window so drift stays small. NaN without IMU (no speed from the video).
     rel: speed in % of the strongest push of the recording. Only confirmed pushes set the 100 %, so
         a tracking jump cannot become the reference. NaN without IMU.
     """

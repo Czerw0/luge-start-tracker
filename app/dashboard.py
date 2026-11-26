@@ -10,6 +10,8 @@ from matplotlib.figure import Figure
 from scipy.signal import savgol_filter
 
 from data_analysis import MAX_ORIENTATION_DRIFT_DEG, analyse_start, load_imu, lowpass
+import inspect
+
 from push_detection import find_pushes, refine_offset, valid_frames
 from video_player import VideoPlayer
 
@@ -20,6 +22,8 @@ JUMP_PX = 50           # residual above this = tracking jump (wrong blob / lost 
                        # motion stays below ~30 px, measured jumps were 100-200 px
 IMU_STILL_S = (0.3, 1.8)   # still window after the IMU start (same as analyse_start's default)
 IMU_LOWPASS_HZ = 15.0      # same low-pass as analyse_start
+# Forward direction push detection assumes without IMU sync (its default argument)
+DEFAULT_DIRECTION = inspect.signature(find_pushes).parameters["direction"].default
 MIN_SYNC_R = 0.9   # below this video and IMU do not show the same movement: sync not trusted (good recordings: 0.98-1.0)
 
 
@@ -333,8 +337,16 @@ class Dashboard(ttk.Frame):
         # Video player (left) and plots (right); the sash between them can be dragged
         body = ttk.PanedWindow(self, orient="horizontal")
         body.pack(fill="both", expand=True, padx=10, pady=10)
-        self.player = VideoPlayer(body, on_frame=self.on_video_frame)
-        body.add(self.player, weight=2)
+        video_col = ttk.Frame(body)
+        body.add(video_col, weight=2)
+        # Above the video: forward direction of the sled in the image
+        self.direction_label = tk.Label(video_col, text="", font=("TkDefaultFont", 20, "bold"))
+        self.direction_label.pack(fill="x")
+        self.player = VideoPlayer(video_col, on_frame=self.on_video_frame)
+        self.player.pack(fill="both", expand=True)
+        # Below the video: one button per detected push, jumps the video there
+        self.push_buttons = ttk.Frame(video_col)
+        self.push_buttons.pack(fill="x", pady=(4, 0))
         plots = ttk.Frame(body)
         body.add(plots, weight=3)
 
@@ -392,6 +404,8 @@ class Dashboard(ttk.Frame):
         self.show_push_table()
         self.show_plots()
         self.load_video()
+        self.show_direction()
+        self.show_push_buttons()
         if self.on_load is not None:   # e.g. the Development tab follows the open recording
             self.on_load(self.data)
 
@@ -544,6 +558,36 @@ class Dashboard(ttk.Frame):
                     return None
                 return pos.loc[i, "x_filt"], pos.loc[i, "y_filt"]
         self.player.load(d["video"], tracking=df, overlay=overlay)
+
+    def show_direction(self):
+        # Arrow pointing the way the sled moves forward in the video
+        sync = self.data["sync"]
+        if self.data["tracking"] is None:
+            self.direction_label.config(text="")
+            return
+        if sync is not None and sync["ok"]:
+            direction, note, color = sync["direction"], "from IMU sync", "black"
+        else:
+            direction, note, color = DEFAULT_DIRECTION, "assumed, no IMU sync", "gray"
+        arrow = "forward  ⟶" if direction > 0 else "⟵  forward"
+        self.direction_label.config(text=f"{arrow}   ({note})", fg=color)
+
+    def show_push_buttons(self):
+        for child in self.push_buttons.winfo_children():
+            child.destroy()
+        pushes = self.data["pushes"]
+        if not pushes:
+            ttk.Label(self.push_buttons, text="No pushes detected").pack(side="left")
+            return
+        ttk.Label(self.push_buttons, text="Jump to:").pack(side="left", padx=(0, 4))
+        for n, p in enumerate(pushes):
+            ttk.Button(self.push_buttons, text=f"Push {n + 1} · {p['t']:.2f} s",
+                       command=lambda n=n: self.jump_to_push(n)).pack(side="left", padx=2)
+
+    def jump_to_push(self, n):
+        self.player.pause()
+        self.player.seek_time(self.data["pushes"][n]["t"])
+        self.push_table.selection_set(str(n))   # highlight the same push in the table
 
     def on_video_frame(self, i, t):
         self.cursor_t = t

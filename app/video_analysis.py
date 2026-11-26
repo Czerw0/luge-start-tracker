@@ -160,59 +160,33 @@ class MarkerTracker:
                 return np.nan, np.nan, np.nan
             return float(np.hypot(a[0] - b[0], a[1] - b[1])), (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
 
-    def track_video(self, video_path):
-        # Track markers in a video file, return DataFrame with results
+    def track_video(self, video_path, csv_path=None, on_frame=None, stop_event=None):
+        # Track markers in a video file (t = frame / fps), return DataFrame with results
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise IOError(f"Cannot open video: {video_path}")
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-
-        self._tracks.clear()
-        rows = []
-        i = 0
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            rows.append(self._row(i, i / fps, self.process_frame(frame)))
-            i += 1
-        cap.release()
-        return pd.DataFrame(rows)
-
-    def _row(self, i, t, det):
-        # Row per frame: <name>_x/_y centre (px), _x_filt/_y_filt Kalman,
-        # _size area, _w/_h box; distance, mid_*; x, y, x_filt, y_filt marker median
-        x, y = self.median_position(det)
-        fx, fy = self.median_position({n: Detection(*p, 0, None) for n, p in self._filt.items()
-                                       if not np.isnan(p[0])})
-        raw = {n: (d.cx, d.cy) if d else (np.nan, np.nan) for n, d in det.items()}
-        dist, mx, my = self.pair_geometry(raw)
-        fdist, fmx, fmy = self.pair_geometry(self._filt)
-
-        # Build row dictionary with all values
-        row = {"frame": i, "t": t}
-        for name, d in det.items():
-            row[f"{name}_x"], row[f"{name}_y"] = raw[name]
-            row[f"{name}_x_filt"], row[f"{name}_y_filt"] = self._filt[name]
-            # size: 3 significant digits
-            row[f"{name}_size"] = round_sig(d.area) if d else np.nan
-            row[f"{name}_w"], row[f"{name}_h"] = (round_sig(d.bbox[2]), round_sig(d.bbox[3])) if d else (np.nan, np.nan)
-        # distance: whole px; positions keep decimals
-        row.update(distance=np.round(dist), mid_x=mx, mid_y=my,
-                   distance_filt=np.round(fdist), mid_x_filt=fmx, mid_y_filt=fmy,
-                   x=x, y=y, x_filt=fx, y_filt=fy)
-        return row
+        return self._track(cap, lambda i: i / fps, csv_path=csv_path, on_frame=on_frame,
+                           stop_event=stop_event)
 
     def track_camera(self, camera_index=0, save_path=None, csv_path=None, on_frame=None,
                      stop_event=None):
-        # Track markers in a live camera, return DataFrame with results
+        # Track markers in a live camera (t = seconds since start), return DataFrame with results
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
             raise IOError(f"Cannot open camera {camera_index}")
         # MJPG gives much higher frame rates than the default format on most webcams
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.t0 = time.perf_counter()   # host clock at video t = 0, saved in meta.json to sync the IMU
+        return self._track(cap, lambda i: time.perf_counter() - self.t0, save_path, csv_path,
+                           on_frame, stop_event)
 
+    def _track(self, cap, frame_time, save_path=None, csv_path=None, on_frame=None, stop_event=None):
+        # Frame loop shared by camera and video file: frame_time(i) -> t in s.
+        # Optionally writes the video (save_path) and streams rows to a CSV (csv_path);
+        # on_frame(frame, detections, row) is called after every frame.
+        # Runs until stop_event is set or no frame is left; always releases cap.
         self._tracks.clear()
         writer = None
         csv_file = csv_writer = None
@@ -221,15 +195,12 @@ class MarkerTracker:
             csv_file = open(csv_path, "w", newline="")
         rows = []
         i = 0
-        t0 = time.perf_counter()
-        self.t0 = t0   # host clock at video t = 0, saved in meta.json to sync the IMU
-        # Process frames until stop_event is set or camera ends
         try:
             while stop_event is None or not stop_event.is_set():
                 ok, frame = cap.read()
                 if not ok:
                     break
-                t = time.perf_counter() - t0
+                t = frame_time(i)
                 if save_path is not None and writer is None:
                     h, w = frame.shape[:2]
                     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -258,6 +229,30 @@ class MarkerTracker:
             if csv_file is not None:
                 csv_file.close()
         return pd.DataFrame(rows)
+
+    def _row(self, i, t, det):
+        # Row per frame: <name>_x/_y centre (px), _x_filt/_y_filt Kalman,
+        # _size area, _w/_h box; distance, mid_*; x, y, x_filt, y_filt marker median
+        x, y = self.median_position(det)
+        fx, fy = self.median_position({n: Detection(*p, 0, None) for n, p in self._filt.items()
+                                       if not np.isnan(p[0])})
+        raw = {n: (d.cx, d.cy) if d else (np.nan, np.nan) for n, d in det.items()}
+        dist, mx, my = self.pair_geometry(raw)
+        fdist, fmx, fmy = self.pair_geometry(self._filt)
+
+        # Build row dictionary with all values
+        row = {"frame": i, "t": t}
+        for name, d in det.items():
+            row[f"{name}_x"], row[f"{name}_y"] = raw[name]
+            row[f"{name}_x_filt"], row[f"{name}_y_filt"] = self._filt[name]
+            # size: 3 significant digits
+            row[f"{name}_size"] = round_sig(d.area) if d else np.nan
+            row[f"{name}_w"], row[f"{name}_h"] = (round_sig(d.bbox[2]), round_sig(d.bbox[3])) if d else (np.nan, np.nan)
+        # distance: whole px; positions keep decimals
+        row.update(distance=np.round(dist), mid_x=mx, mid_y=my,
+                   distance_filt=np.round(fdist), mid_x_filt=fmx, mid_y_filt=fmy,
+                   x=x, y=y, x_filt=fx, y_filt=fy)
+        return row
 
     def draw(self, frame, detections):
         out = frame.copy()

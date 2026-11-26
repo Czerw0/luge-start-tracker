@@ -334,11 +334,12 @@ class Dashboard(ttk.Frame):
         body.add(plots, weight=3)
 
         self.fig = Figure(figsize=(12, 6), dpi=100)
-        self.fig.subplots_adjust(left=0.06, right=0.95, bottom=0.08, top=0.95, wspace=1.2, hspace=0.4)
-        # Top row: video (markers), bottom row: IMU. Kept in separate charts for now.
+        self.fig.subplots_adjust(left=0.06, right=0.93, bottom=0.08, top=0.95, wspace=1.2, hspace=0.4)
+        # Top row: marker position with the IMU speed on a second axis (distance between the
+        # markers is in the Development tab), bottom row: IMU
         gs = self.fig.add_gridspec(2, 6)
-        self.ax_pos = self.fig.add_subplot(gs[0, 0:3])
-        self.ax_dist = self.fig.add_subplot(gs[0, 3:6])
+        self.ax_pos = self.fig.add_subplot(gs[0, 0:6])
+        self.ax_pos_v = self.ax_pos.twinx()   # IMU speed (m/s, right axis) over the position (px)
         self.ax_imu_v = self.fig.add_subplot(gs[1, 0:2])
         self.ax_acc = self.fig.add_subplot(gs[1, 2:4])
         self.ax_gyro = self.fig.add_subplot(gs[1, 4:6])
@@ -407,39 +408,43 @@ class Dashboard(ttk.Frame):
         df = d["tracking"]
         for ax in self.fig.axes:
             ax.clear()
-            ax.grid(alpha=0.3)
+            if ax is not self.ax_pos_v:   # one grid per chart (the speed axis sits on top of position)
+                ax.grid(alpha=0.3)
+        self.ax_pos_v.yaxis.tick_right()
+        self.ax_pos_v.yaxis.set_label_position("right")
 
         def no_data(ax, title, text="no data"):
             ax.set_title(title)
             ax.text(0.5, 0.5, text, ha="center", va="center", transform=ax.transAxes, color="gray")
 
+        result = d["imu_result"]
         if df is not None and df["x_filt"].notna().any():
             t = df["t"]
-            self.ax_pos.set_title("Marker position")
+            self.ax_pos.set_title("Marker position and IMU speed")
             self.ax_pos.plot(t, df["x_filt"], color="tab:blue", label="x (Kalman)")
             self.ax_pos.plot(t, df["y_filt"], color="tab:orange", label="y (Kalman)")
             self.ax_pos.set_xlabel("t (s)")
             self.ax_pos.set_ylabel("position (px)")
-            self.ax_pos.legend(fontsize=8, loc="upper left")
+            if result is not None:
+                self.ax_pos_v.plot(result["t"], result["v"], color="tab:red", lw=1.2, label="speed, IMU (m/s)")
+                self.ax_pos_v.axhline(0, color="tab:red", lw=0.6, ls=":")   # signed: < 0 = backwards
+                self.ax_pos_v.set_ylabel("IMU speed (m/s)")
+            else:
+                self.ax_pos_v.set_yticks([])
+            # One legend for both axes of the combined chart
+            h1, l1 = self.ax_pos.get_legend_handles_labels()
+            h2, l2 = self.ax_pos_v.get_legend_handles_labels()
+            self.ax_pos_v.legend(h1 + h2, l1 + l2, fontsize=8, loc="upper left")
             # y range from the trustworthy frames, so a lost marker (Kalman running off) does not squash the plot
             ok = valid_frames(df)
             if ok.any():
                 lo = min(df.loc[ok, "x_filt"].min(), df.loc[ok, "y_filt"].min())
                 hi = max(df.loc[ok, "x_filt"].max(), df.loc[ok, "y_filt"].max())
                 self.ax_pos.set_ylim(lo - 0.1 * (hi - lo), hi + 0.15 * (hi - lo))
-
-            self.ax_dist.set_title("Distance between markers")
-            self.ax_dist.plot(t, df["distance_filt"], label="Kalman")
-            self.ax_dist.plot(t, df["distance"], ".", alpha=0.3, markersize=2, label="raw")
-            self.ax_dist.set_xlabel("t (s)")
-            self.ax_dist.set_ylabel("px")
-            self.ax_dist.legend(fontsize=8)
         else:
-            for ax, title in ((self.ax_pos, "Marker position"),
-                              (self.ax_dist, "Distance between markers")):
-                no_data(ax, title, "no tracking data")
+            no_data(self.ax_pos, "Marker position and IMU speed", "no tracking data")
+            self.ax_pos_v.set_yticks([])
 
-        result = d["imu_result"]
         if result is not None:
             self.ax_imu_v.set_title("Speed (IMU, integrated)")
             self.ax_imu_v.plot(result["t"], result["v"], color="tab:red", lw=1.2)
@@ -481,13 +486,13 @@ class Dashboard(ttk.Frame):
 
         # Cursor for the current video frame (animated: drawn only by draw_cursor, not by draw)
         self.background = None
-        time_axes = (self.ax_pos, self.ax_dist, self.ax_imu_v, self.ax_acc, self.ax_gyro)
+        time_axes = (self.ax_pos, self.ax_imu_v, self.ax_acc, self.ax_gyro)
         self.cursors = [ax.axvline(np.nan, color="magenta", lw=1.5, animated=True) for ax in time_axes]
         self.cursor_dot = self.ax_pos.plot([], [], "o", color="magenta", markersize=7, animated=True)[0]
 
         # User markers as vertical lines on the time plots
         for m in d["markers"]:
-            for ax in (self.ax_pos, self.ax_dist, self.ax_imu_v, self.ax_acc, self.ax_gyro):
+            for ax in (self.ax_pos, self.ax_imu_v, self.ax_acc, self.ax_gyro):
                 ax.axvline(m["t"], color="orange", ls=":")
             self.ax_pos.annotate(m.get("label", ""), (m["t"], 1), xycoords=("data", "axes fraction"),
                                  rotation=90, va="top", fontsize=8, color="darkorange")

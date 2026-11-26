@@ -19,7 +19,8 @@ Luge start tracking: computer vision (OpenCV + YOLO) combined with data from a s
 │   ├── data_analysis.py    # Movella DOT streaming, IMU data loading and processing
 │   ├── imu_panel.py        # live IMU panel of the Measurement tab
 │   ├── push_detection.py   # video/IMU fine sync and push detection
-│   ├── dashboard.py        # Analysis tab
+│   ├── dashboard.py        # Analysis and Development tabs
+│   ├── style.py            # look of the app: colours, fonts, ttk theme, plot style
 │   └── video_player.py     # video player of the Analysis tab
 ├── notebooks/
 │   └── push_detection.ipynb   # how the sync and push detection were developed and tested

@@ -9,8 +9,10 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from scipy.signal import savgol_filter
 
+import style
 from data_analysis import MAX_ORIENTATION_DRIFT_DEG, analyse_start, load_imu, lowpass
 from push_detection import DEFAULT_DIRECTION, find_pushes, refine_offset, valid_frames
+from style import no_data
 from video_analysis import load_tracking
 from video_player import VideoPlayer
 
@@ -195,16 +197,16 @@ def development_values(data):
     return out
 
 
-def render_cards(frame, values, columns=6):
-    # Replace the content of `frame` with one card per (label, value)
+def render_cards(frame, values, columns=8):
+    # Replace the content of `frame` with one compact card per (label, value)
     for child in frame.winfo_children():
         child.destroy()
     for i, (label, value) in enumerate(values.items()):
-        card = ttk.Frame(frame, relief="groove", padding=6)
-        card.grid(row=i // columns, column=i % columns, sticky="ew", padx=3, pady=3)
+        card = ttk.Frame(frame, style="Card.TFrame", padding=(10, 5))
+        card.grid(row=i // columns, column=i % columns, sticky="nsew", padx=3, pady=3)
         frame.columnconfigure(i % columns, weight=1)
-        ttk.Label(card, text=label).pack(anchor="w")
-        ttk.Label(card, text=value, font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
+        ttk.Label(card, text=label.upper(), style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(card, text=value, style="CardValue.TLabel").pack(anchor="w")
 
 
 class DevelopmentTab(ttk.Frame):
@@ -212,71 +214,68 @@ class DevelopmentTab(ttk.Frame):
 
     def __init__(self, master):
         super().__init__(master)
-        self.title = ttk.Label(self, text="Open a recording in the Analysis tab to see its values here.")
-        self.title.pack(anchor="w", padx=10, pady=10)
+        self.title = ttk.Label(self, text="Open a recording in the Analysis tab to see its values here.",
+                               style="Title.TLabel")
+        self.title.pack(anchor="w", padx=12, pady=(12, 6))
         self.cards = ttk.Frame(self)
-        self.cards.pack(fill="x", padx=10)
+        self.cards.pack(fill="x", padx=9)
 
         self.fig = Figure(figsize=(12, 6), dpi=100)
-        self.fig.subplots_adjust(left=0.06, right=0.98, bottom=0.08, top=0.94, wspace=0.18, hspace=0.42)
+        self.fig.subplots_adjust(left=0.06, right=0.98, bottom=0.08, top=0.93, wspace=0.15, hspace=0.45)
         (self.ax_imu_raw, self.ax_imu_filt), (self.ax_noise, self.ax_dist) = self.fig.subplots(2, 2)
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=12, pady=12)
 
     def show(self, data):
-        self.title.config(text=f"Recording: {data['folder'].name}")
-        render_cards(self.cards, development_values(data), columns=4)
+        self.title.config(text=f"Recording  {data['folder'].name}")
+        render_cards(self.cards, development_values(data), columns=5)
         self.show_plots(data)
 
     def show_plots(self, data):
         for ax in self.fig.axes:
             ax.clear()
-            ax.grid(alpha=0.3)
             ax.set_xlabel("t (s)")
 
-        def no_data(ax, title, text):
-            ax.set_title(title)
-            ax.text(0.5, 0.5, text, ha="center", va="center", transform=ax.transAxes, color="gray")
-
-        colors = {"x": "tab:red", "y": "tab:green", "z": "tab:blue"}
+        colors = style.AXES_COLORS
         imu, result = data["imu"], data["imu_result"]
         title = "IMU before filtering: raw acceleration (sensor axes, with gravity)"
         if imu is not None:
-            self.ax_imu_raw.set_title(title, fontsize=10)
+            self.ax_imu_raw.set_title(title)
             for axis, c in colors.items():
                 self.ax_imu_raw.plot(imu["t"], imu["a" + axis], color=c, lw=0.8, label="a" + axis)
             self.ax_imu_raw.set_ylabel("m/s²")
-            self.ax_imu_raw.legend(fontsize=8, loc="upper right")
+            self.ax_imu_raw.legend(loc="upper right", ncol=3)
         else:
             no_data(self.ax_imu_raw, title, "no IMU file")
 
         title = f"IMU after filtering: gravity + bias removed, low-pass {IMU_LOWPASS_HZ:.0f} Hz"
         if result is not None:
-            self.ax_imu_filt.set_title(title, fontsize=10)
+            self.ax_imu_filt.set_title(title)
             filt = imu_filtered(result)
             for i, (axis, c) in enumerate(colors.items()):
-                self.ax_imu_filt.plot(result["t"], result["l" + axis], color=c, lw=0.6, alpha=0.3)
+                self.ax_imu_filt.plot(result["t"], result["l" + axis], color=c, lw=0.6, alpha=0.25)
                 self.ax_imu_filt.plot(result["t"], filt[:, i], color=c, lw=1.0, label="a" + axis)
             self.ax_imu_filt.set_ylabel("m/s²  (faint = before low-pass)")
-            self.ax_imu_filt.legend(fontsize=8, loc="upper right")
+            self.ax_imu_filt.legend(loc="upper right", ncol=3)
         else:
             no_data(self.ax_imu_filt, title, data["imu_error"] or "no IMU file")
 
         df = data["tracking"]
         title = f"Video noise: raw position minus smoothed ({NOISE_WINDOW_S:.1f} s)"
         if df is not None and df["x_filt"].notna().any():
-            self.ax_noise.set_title(title, fontsize=10)
+            self.ax_noise.set_title(title)
             for name, residual in video_noise(df).items():
-                self.ax_noise.plot(df["t"], residual, lw=0.7,
+                marker = name.rsplit("_", 1)[0]
+                self.ax_noise.plot(df["t"], residual, lw=0.7, color=style.MARKER_COLORS.get(marker),
                                    ls="-" if name.endswith("_x") else ":", label=name)
             self.ax_noise.set_ylabel("px")
-            self.ax_noise.legend(fontsize=8, loc="upper right", ncol=2)
+            self.ax_noise.legend(loc="upper right", ncol=2)
 
-            self.ax_dist.set_title("Distance between markers", fontsize=10)
-            self.ax_dist.plot(df["t"], df["distance"], ".", ms=2, alpha=0.4, color="tab:green", label="centres, raw")
-            self.ax_dist.plot(df["t"], df["distance_filt"], color="tab:green", lw=1, label="centres, Kalman")
+            self.ax_dist.set_title("Distance between markers")
+            self.ax_dist.plot(df["t"], df["distance"], ".", ms=2, alpha=0.35, color=style.POS_X, label="centres, raw")
+            self.ax_dist.plot(df["t"], df["distance_filt"], color=style.POS_X, lw=1.2, label="centres, Kalman")
             self.ax_dist.set_ylabel("px")
-            self.ax_dist.legend(fontsize=8, loc="upper right")
+            self.ax_dist.legend(loc="upper right")
         else:
             no_data(self.ax_noise, title, "no tracking data")
             no_data(self.ax_dist, "Distance between markers", "no tracking data")
@@ -293,48 +292,49 @@ class Dashboard(ttk.Frame):
         self.on_load = None   # called with the loaded data after every load
 
         controls = ttk.Frame(self)
-        controls.pack(fill="x", padx=10, pady=10)
-        ttk.Label(controls, text="Analysis:").pack(side="left")
+        controls.pack(fill="x", padx=12, pady=(12, 6))
+        ttk.Label(controls, text="Recording", style="Title.TLabel").pack(side="left")
         self.choice = tk.StringVar()
-        self.combo = ttk.Combobox(controls, textvariable=self.choice, width=48, state="readonly")
-        self.combo.pack(side="left", padx=5)
+        self.combo = ttk.Combobox(controls, textvariable=self.choice, width=40, state="readonly")
+        self.combo.pack(side="left", padx=(10, 6))
         self.combo.bind("<<ComboboxSelected>>", lambda e: self.load(self.analyses_dir / self.choice.get()))
-        ttk.Button(controls, text="Refresh", command=self.refresh).pack(side="left", padx=5)
-        ttk.Button(controls, text="Open folder...", command=self.browse).pack(side="left", padx=5)
-        self.status = ttk.Label(controls, text="")
+        ttk.Button(controls, text="Refresh", command=self.refresh).pack(side="left", padx=3)
+        ttk.Button(controls, text="Open folder...", command=self.browse).pack(side="left", padx=3)
+        self.status = ttk.Label(controls, text="", style="Muted.TLabel")
         self.status.pack(side="left", padx=15)
 
+        # Compact strip of key values
         self.cards = ttk.Frame(self)
-        self.cards.pack(fill="x", padx=10)
+        self.cards.pack(fill="x", padx=9)
 
-        # One row per detected push: time, strength (largest forward speed), % of the strongest push
-        columns = ("n", "t", "speed", "rel", "imu")
-        self.push_table = ttk.Treeview(self, columns=columns, show="headings", height=5)
-        for col, title, width in (("n", "#", 40), ("t", "t (s)", 80), ("speed", "max speed", 120),
-                                  ("rel", "% of strongest", 110), ("imu", "seen by IMU", 90)):
-            self.push_table.heading(col, text=title)
-            self.push_table.column(col, width=width, anchor="e")
-        self.push_table.pack(fill="x", padx=10, pady=(8, 0))
-        self.push_table.bind("<<TreeviewSelect>>", self.on_push_selected)
-
-        # Video player (left) and plots (right); the sash between them can be dragged
+        # Video column (left) and plots (right); the sash between them can be dragged
         body = ttk.PanedWindow(self, orient="horizontal")
-        body.pack(fill="both", expand=True, padx=10, pady=10)
+        body.pack(fill="both", expand=True, padx=12, pady=(8, 12))
         video_col = ttk.Frame(body)
         body.add(video_col, weight=2)
         # Above the video: forward direction of the sled in the image
-        self.direction_label = tk.Label(video_col, text="", font=("TkDefaultFont", 20, "bold"))
-        self.direction_label.pack(fill="x")
+        self.direction_label = tk.Label(video_col, text="", anchor="w", bg=style.BG, fg=style.TEXT,
+                                        font=(style.font_family(), 13, "bold"))
+        self.direction_label.pack(fill="x", pady=(0, 4))
         self.player = VideoPlayer(video_col, on_frame=self.on_video_frame)
         self.player.pack(fill="both", expand=True)
         # Below the video: one button per detected push, jumps the video there
         self.push_buttons = ttk.Frame(video_col)
-        self.push_buttons.pack(fill="x", pady=(4, 0))
+        self.push_buttons.pack(fill="x", pady=(8, 4))
+        # ... and the push list: time, strength (largest forward IMU speed), % of the strongest push
+        columns = ("n", "t", "speed", "rel", "imu")
+        self.push_table = ttk.Treeview(video_col, columns=columns, show="headings", height=4)
+        for col, title, width in (("n", "#", 36), ("t", "t (s)", 70), ("speed", "max speed", 90),
+                                  ("rel", "% of best", 80), ("imu", "seen by IMU", 90)):
+            self.push_table.heading(col, text=title)
+            self.push_table.column(col, width=width, minwidth=width, anchor="center")
+        self.push_table.pack(fill="x")
+        self.push_table.bind("<<TreeviewSelect>>", self.on_push_selected)
         plots = ttk.Frame(body)
         body.add(plots, weight=3)
 
         self.fig = Figure(figsize=(12, 6), dpi=100)
-        self.fig.subplots_adjust(left=0.06, right=0.93, bottom=0.08, top=0.95, wspace=1.2, hspace=0.4)
+        self.fig.subplots_adjust(left=0.07, right=0.93, bottom=0.08, top=0.93, wspace=1.3, hspace=0.38)
         # Top row: marker position with the IMU speed on a second axis (distance between the
         # markers is in the Development tab), bottom row: IMU
         gs = self.fig.add_gridspec(2, 6)
@@ -408,56 +408,51 @@ class Dashboard(ttk.Frame):
         df = d["tracking"]
         for ax in self.fig.axes:
             ax.clear()
-            if ax is not self.ax_pos_v:   # one grid per chart (the speed axis sits on top of position)
-                ax.grid(alpha=0.3)
+        self.ax_pos_v.grid(False)   # one grid per chart (the speed axis sits on top of the position)
         self.ax_pos_v.yaxis.tick_right()
         self.ax_pos_v.yaxis.set_label_position("right")
-
-        def no_data(ax, title, text="no data"):
-            ax.set_title(title)
-            ax.text(0.5, 0.5, text, ha="center", va="center", transform=ax.transAxes, color="gray")
 
         result = d["imu_result"]
         if df is not None and df["x_filt"].notna().any():
             t = df["t"]
             self.ax_pos.set_title("Marker position and IMU speed")
-            self.ax_pos.plot(t, df["x_filt"], color="tab:blue", label="x (Kalman)")
-            self.ax_pos.plot(t, df["y_filt"], color="tab:orange", label="y (Kalman)")
+            self.ax_pos.plot(t, df["x_filt"], color=style.POS_X, label="x (Kalman)")
+            self.ax_pos.plot(t, df["y_filt"], color=style.POS_Y, label="y (Kalman)")
             self.ax_pos.set_xlabel("t (s)")
             self.ax_pos.set_ylabel("position (px)")
             if result is not None:
-                self.ax_pos_v.plot(result["t"], result["v"], color="tab:red", lw=1.2, label="speed, IMU (m/s)")
-                self.ax_pos_v.axhline(0, color="tab:red", lw=0.6, ls=":")   # signed: < 0 = backwards
+                self.ax_pos_v.plot(result["t"], result["v"], color=style.IMU_SPEED, lw=1.4, label="speed, IMU (m/s)")
+                self.ax_pos_v.axhline(0, color=style.IMU_SPEED, lw=0.6, ls=":")   # signed: < 0 = backwards
                 self.ax_pos_v.set_ylabel("IMU speed (m/s)")
             else:
                 self.ax_pos_v.set_yticks([])
             # One legend for both axes of the combined chart
             h1, l1 = self.ax_pos.get_legend_handles_labels()
             h2, l2 = self.ax_pos_v.get_legend_handles_labels()
-            self.ax_pos_v.legend(h1 + h2, l1 + l2, fontsize=8, loc="upper left")
+            self.ax_pos_v.legend(h1 + h2, l1 + l2, loc="upper left", ncol=3)
             # y range from the trustworthy frames, so a lost marker (Kalman running off) does not squash the plot
             ok = valid_frames(df)
             if ok.any():
                 lo = min(df.loc[ok, "x_filt"].min(), df.loc[ok, "y_filt"].min())
                 hi = max(df.loc[ok, "x_filt"].max(), df.loc[ok, "y_filt"].max())
-                self.ax_pos.set_ylim(lo - 0.1 * (hi - lo), hi + 0.15 * (hi - lo))
+                self.ax_pos.set_ylim(lo - 0.1 * (hi - lo), hi + 0.25 * (hi - lo))   # room for the legend
         else:
             no_data(self.ax_pos, "Marker position and IMU speed", "no tracking data")
             self.ax_pos_v.set_yticks([])
 
         if result is not None:
             self.ax_imu_v.set_title("Speed (IMU, integrated)")
-            self.ax_imu_v.plot(result["t"], result["v"], color="tab:red", lw=1.2)
-            self.ax_imu_v.axhline(0, color="gray", lw=0.8)   # signed: < 0 = backwards
+            self.ax_imu_v.plot(result["t"], result["v"], color=style.IMU_SPEED)
+            self.ax_imu_v.axhline(0, color=style.MUTED, lw=0.6)   # signed: < 0 = backwards
             self.ax_imu_v.set_xlabel("t (s)")
             self.ax_imu_v.set_ylabel("m/s")
             self.ax_acc.set_title("Forward acceleration (IMU)")
-            self.ax_acc.plot(result["t"], result["a_fwd"], alpha=0.4, label="raw")
-            self.ax_acc.plot(result["t"], result["a_filt"], label="low-pass")
-            self.ax_acc.axvline(d["imu_info"]["t_start"], color="red", ls="--", label="start")
+            self.ax_acc.plot(result["t"], result["a_fwd"], color=style.POS_X, alpha=0.3, lw=0.8, label="raw")
+            self.ax_acc.plot(result["t"], result["a_filt"], color=style.POS_X, label="low-pass")
+            self.ax_acc.axvline(d["imu_info"]["t_start"], color=style.MUTED, ls="--", lw=1, label="start")
             self.ax_acc.set_xlabel("t (s)")
             self.ax_acc.set_ylabel("m/s²")
-            self.ax_acc.legend(fontsize=8)
+            self.ax_acc.legend(loc="upper left")
         else:
             no_data(self.ax_imu_v, "Speed (IMU, integrated)", d["imu_error"] or "no IMU file")
             no_data(self.ax_acc, "Forward acceleration (IMU)", d["imu_error"] or "no IMU file")
@@ -465,37 +460,38 @@ class Dashboard(ttk.Frame):
         imu = d["imu"]
         if imu is not None and imu[["gx", "gy", "gz"]].notna().any().any():
             self.ax_gyro.set_title("Angular velocity (IMU)")
-            for c in ("gx", "gy", "gz"):
-                self.ax_gyro.plot(imu["t"], imu[c], label=c)
+            for axis, color in style.AXES_COLORS.items():
+                self.ax_gyro.plot(imu["t"], imu["g" + axis], color=color, lw=1, label="g" + axis)
             self.ax_gyro.set_xlabel("t (s)")
             self.ax_gyro.set_ylabel("rad/s")
-            self.ax_gyro.legend(fontsize=8)
+            self.ax_gyro.legend(loc="upper left", ncol=3)
         else:
             no_data(self.ax_gyro, "Angular velocity (IMU)", "no gyroscope data")
 
-        # Detected pushes: red triangles on the position, red lines on the IMU acceleration
+        # Detected pushes: triangles on the position, lines on the IMU acceleration
         for p in d["pushes"]:
             if df is not None:
                 y = np.interp(p["t"], df["t"], df["x_filt"])
-                self.ax_pos.plot(p["t"], y, "rv")
+                self.ax_pos.plot(p["t"], y, "v", color=style.PUSH, markersize=7)
                 if np.isfinite(p["rel"]):
                     self.ax_pos.annotate(f"{p['rel']:.0f}%", (p["t"], y), textcoords="offset points",
-                                         xytext=(0, 6), ha="center", fontsize=7, color="red")
+                                         xytext=(0, 7), ha="center", fontsize=8, fontweight="bold",
+                                         color=style.PUSH)
             if p["imu_ok"] is not None:
-                self.ax_acc.axvline(p["t"], color="red", ls="-" if p["imu_ok"] else ":", lw=1)
+                self.ax_acc.axvline(p["t"], color=style.PUSH, ls="-" if p["imu_ok"] else ":", lw=1)
 
         # Cursor for the current video frame (animated: drawn only by draw_cursor, not by draw)
         self.background = None
         time_axes = (self.ax_pos, self.ax_imu_v, self.ax_acc, self.ax_gyro)
-        self.cursors = [ax.axvline(np.nan, color="magenta", lw=1.5, animated=True) for ax in time_axes]
-        self.cursor_dot = self.ax_pos.plot([], [], "o", color="magenta", markersize=7, animated=True)[0]
+        self.cursors = [ax.axvline(np.nan, color=style.CURSOR, lw=1.5, animated=True) for ax in time_axes]
+        self.cursor_dot = self.ax_pos.plot([], [], "o", color=style.CURSOR, markersize=7, animated=True)[0]
 
         # User markers as vertical lines on the time plots
         for m in d["markers"]:
-            for ax in (self.ax_pos, self.ax_imu_v, self.ax_acc, self.ax_gyro):
-                ax.axvline(m["t"], color="orange", ls=":")
+            for ax in time_axes:
+                ax.axvline(m["t"], color=style.MARKER, ls=":", lw=1)
             self.ax_pos.annotate(m.get("label", ""), (m["t"], 1), xycoords=("data", "axes fraction"),
-                                 rotation=90, va="top", fontsize=8, color="darkorange")
+                                 rotation=90, va="top", fontsize=8, color=style.MARKER)
         self.canvas.draw_idle()
 
     # --- video player <-> plots ---
@@ -524,22 +520,22 @@ class Dashboard(ttk.Frame):
             self.direction_label.config(text="")
             return
         if sync is not None and sync["ok"]:
-            direction, note, color = sync["direction"], "from IMU sync", "black"
+            direction, note, color = sync["direction"], "from IMU sync", style.TEXT
         else:
-            direction, note, color = DEFAULT_DIRECTION, "assumed, no IMU sync", "gray"
-        arrow = "forward  ⟶" if direction > 0 else "⟵  forward"
-        self.direction_label.config(text=f"{arrow}   ({note})", fg=color)
+            direction, note, color = DEFAULT_DIRECTION, "assumed, no IMU sync", style.MUTED
+        arrow = "Forward  ⟶" if direction > 0 else "⟵  Forward"
+        self.direction_label.config(text=f"{arrow}    ·  {note}", fg=color)
 
     def show_push_buttons(self):
         for child in self.push_buttons.winfo_children():
             child.destroy()
         pushes = self.data["pushes"]
         if not pushes:
-            ttk.Label(self.push_buttons, text="No pushes detected").pack(side="left")
+            ttk.Label(self.push_buttons, text="No pushes detected", style="Muted.TLabel").pack(side="left")
             return
-        ttk.Label(self.push_buttons, text="Jump to:").pack(side="left", padx=(0, 4))
+        ttk.Label(self.push_buttons, text="Jump to push", style="Muted.TLabel").pack(side="left", padx=(0, 6))
         for n, p in enumerate(pushes):
-            ttk.Button(self.push_buttons, text=f"Push {n + 1} · {p['t']:.2f} s",
+            ttk.Button(self.push_buttons, text=f"{n + 1} · {p['t']:.1f} s",
                        command=lambda n=n: self.jump_to_push(n)).pack(side="left", padx=2)
 
     def jump_to_push(self, n):

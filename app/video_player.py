@@ -6,6 +6,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
+import style
+
 SPEEDS = ("0.1x", "0.25x", "0.5x", "1x")
 
 
@@ -42,19 +44,19 @@ class VideoPlayer(ttk.Frame):
         self.view = ttk.Frame(self)
         self.view.pack(fill="both", expand=True)
         self.view.pack_propagate(False)
-        self.screen = ttk.Label(self.view, text="no video", anchor="center")
+        self.screen = ttk.Label(self.view, text="no video", style="Video.TLabel", anchor="center")
         self.screen.pack(fill="both", expand=True)
 
-        self.slider = tk.Scale(self, from_=0, to=0, orient="horizontal", showvalue=False,
-                               command=lambda v: self.seek(int(float(v))) if int(float(v)) != self.cur else None)
-        self.slider.pack(fill="x")
+        self.slider = ttk.Scale(self, from_=0, to=0, orient="horizontal",
+                                command=lambda v: self.seek(int(float(v))) if int(float(v)) != self.cur else None)
+        self.slider.pack(fill="x", pady=(6, 2))
 
         buttons = ttk.Frame(self)
-        buttons.pack(fill="x", pady=(2, 0))
+        buttons.pack(fill="x", pady=(4, 0))
         for text, step in (("|<", None), ("-10", -10), ("-1", -1)):
             ttk.Button(buttons, text=text, width=4,
                        command=(lambda s=step: self.seek(0) if s is None else self.step(s))).pack(side="left")
-        self.play_button = ttk.Button(buttons, text="Play", width=6, command=self.toggle)
+        self.play_button = ttk.Button(buttons, text="Play", width=7, command=self.toggle, style="Accent.TButton")
         self.play_button.pack(side="left", padx=4)
         for text, step in (("+1", 1), ("+10", 10), (">|", None)):
             ttk.Button(buttons, text=text, width=4,
@@ -66,14 +68,14 @@ class VideoPlayer(ttk.Frame):
         speed_box.bind("<<ComboboxSelected>>", lambda e: self.play() if self.playing else None)
 
         goto = ttk.Frame(self)
-        goto.pack(fill="x", pady=2)
-        ttk.Label(goto, text="Frame:").pack(side="left")
+        goto.pack(fill="x", pady=(6, 0))
+        ttk.Label(goto, text="Frame", style="Muted.TLabel").pack(side="left")
         self.goto_var = tk.StringVar()
         entry = ttk.Entry(goto, textvariable=self.goto_var, width=7)
         entry.pack(side="left", padx=4)
         entry.bind("<Return>", lambda e: self.goto())
         ttk.Button(goto, text="Go", width=4, command=self.goto).pack(side="left")
-        self.info = ttk.Label(goto, text="")
+        self.info = ttk.Label(goto, text="", style="Muted.TLabel")
         self.info.pack(side="left", padx=10)
 
     def load(self, path, tracking=None, overlay=None):

@@ -12,18 +12,19 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from PIL import Image, ImageTk
 
+import style
 from dashboard import Dashboard, DevelopmentTab
 from data_analysis import samples_to_dataframe, save_imu
 from imu_panel import ImuPanel
 from video_analysis import MarkerTracker
 
 ANALYSES_DIR = Path(__file__).resolve().parent.parent / "analyses"
-RESULTS_WIDTH = 420   # px reserved for the results panel; the video gets the rest
-PLOT_HEIGHT = 260     # px height of the plots at the bottom
+RESULTS_WIDTH = 420   # px (at 100 % scaling) reserved for the results panel; the video gets the rest
+PLOT_HEIGHT = 260     # px (at 100 % scaling) height of the plots at the bottom
 PLOT_SECONDS = 10     # time window shown in the plots
 PLOT_INTERVAL = 0.6   # s between plot redraws; a matplotlib redraw blocks the video
 PREVIEW_ROWS = 600     # rows kept while only previewing
-PLOT_COLORS = {"GREEN": "green", "PINK": "deeppink"}
+PLOT_COLORS = style.MARKER_COLORS
 
 
 def format_results(row, names):
@@ -42,10 +43,12 @@ def format_results(row, names):
 
 class Gui:
     def __init__(self):
+        style.enable_sharp_rendering()   # before the window exists, else Windows blurs it
         self.window = tk.Tk()
+        style.apply_theme(self.window)   # before any widget or plot is created
         self.window.title("Luge Start Tracker")
-        w = min(1700, int(self.window.winfo_screenwidth() * 0.92))
-        h = min(1000, int(self.window.winfo_screenheight() * 0.9))
+        w = min(style.px(1700), int(self.window.winfo_screenwidth() * 0.92))
+        h = min(style.px(1000), int(self.window.winfo_screenheight() * 0.9))
         self.window.geometry(f"{w}x{h}+20+20")
         self.window.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -101,55 +104,63 @@ class Gui:
 
         # Top: controls
         controls = ttk.Frame(tab)
-        controls.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
-        ttk.Label(controls, text="Camera:").pack(side="left")
+        controls.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
+        ttk.Label(controls, text="Camera", style="Title.TLabel").pack(side="left")
         self.camera_var = tk.StringVar(value="0")
         ttk.Spinbox(controls, from_=0, to=9, width=3, textvariable=self.camera_var,
-                    command=self.on_camera_change).pack(side="left", padx=5)
-        self.start_button = ttk.Button(controls, text="Start analysis", command=self.start)
-        self.start_button.pack(side="left", padx=5)
+                    command=self.on_camera_change).pack(side="left", padx=(8, 12))
+        self.start_button = ttk.Button(controls, text="Start analysis", command=self.start,
+                                       style="Accent.TButton")
+        self.start_button.pack(side="left", padx=3)
         self.stop_button = ttk.Button(controls, text="Stop analysis", command=self.stop, state="disabled")
-        self.stop_button.pack(side="left", padx=5)
-        self.status = ttk.Label(controls, text="Ready")
+        self.stop_button.pack(side="left", padx=3)
+        self.status = ttk.Label(controls, text="Ready", style="Muted.TLabel")
         self.status.pack(side="left", padx=15)
 
         # Middle: video on the left, current results on the right
         self.middle = ttk.Frame(tab)
-        self.middle.grid(row=1, column=0, sticky="nsew", padx=10)
+        self.middle.grid(row=1, column=0, sticky="nsew", padx=12)
         self.middle.pack_propagate(False)   # size comes from the grid, not from the image
-        self.results = tk.Label(self.middle, text="", font=("Courier New", 12), width=38,
-                                justify="left", anchor="nw")
-        self.results.pack(side="right", fill="y", padx=(20, 0))
-        self.preview = ttk.Label(self.middle)
-        self.preview.pack(side="left", anchor="nw")
+        self.results = tk.Label(self.middle, text="No tracking values yet", font=style.MONO, width=38,
+                                justify="left", anchor="nw", bg=style.SURFACE, fg=style.TEXT,
+                                padx=14, pady=12, highlightthickness=1,
+                                highlightbackground=style.BORDER)
+        self.results.pack(side="right", fill="y", padx=(12, 0))
+        self.preview = ttk.Label(self.middle, text="Waiting for the camera...", style="Video.TLabel",
+                                 anchor="center", justify="center")
+        self.preview.pack(side="left", fill="both", expand=True)
 
         # Bottom: plots of the last PLOT_SECONDS seconds
-        self.fig = Figure(figsize=(12, 3), dpi=100)   # fixed layout: constrained layout is slow to redraw
+        self.fig = Figure(figsize=(12, PLOT_HEIGHT / 100), dpi=100)   # fixed layout: constrained layout is slow to redraw
         self.ax_x, self.ax_y, self.ax_d = self.fig.subplots(1, 3)
-        self.fig.subplots_adjust(left=0.05, right=0.99, bottom=0.2, top=0.88, wspace=0.2)
-        self.ax_x.set_title("x (px)")
-        self.ax_y.set_title("y (px)")
+        self.fig.subplots_adjust(left=0.05, right=0.99, bottom=0.2, top=0.86, wspace=0.18)
+        self.ax_x.set_title("Marker x (px)")
+        self.ax_y.set_title("Marker y (px)")
         self.ax_y.invert_yaxis()   # image y grows downwards
-        self.ax_d.set_title("distance (px)")
+        self.ax_d.set_title("Distance between markers (px)")
+        # Grey note shown while there is nothing to plot yet
+        self.empty_notes = {ax: ax.text(0.5, 0.5, "no data yet", ha="center", va="center",
+                                        transform=ax.transAxes, color=style.MUTED)
+                            for ax in (self.ax_x, self.ax_y, self.ax_d)}
         for ax in (self.ax_x, self.ax_y, self.ax_d):
             ax.set_xlabel("t (s)")
-            ax.grid(alpha=0.3)
         self.lines = {}   # (plot key, column) -> matplotlib line
         for name in ("GREEN", "PINK"):
             c = PLOT_COLORS.get(name, name)
             for key, ax in (("x", self.ax_x), ("y", self.ax_y)):
                 self.lines[name + "_" + key + "_filt"] = ax.plot([], [], color=c, label=name + " (Kalman)")[0]
                 self.lines[name + "_" + key] = ax.plot([], [], ".", color=c, alpha=0.4, markersize=3, rasterized=True)[0]
-        self.lines["distance_filt"] = self.ax_d.plot([], [], color="green", label="Kalman")[0]
-        self.lines["distance"] = self.ax_d.plot([], [], ".", color="green", alpha=0.4, markersize=3)[0]
-        self.ax_x.legend(loc="upper left", fontsize=8)
+        self.lines["distance_filt"] = self.ax_d.plot([], [], color=style.POS_X, label="Kalman")[0]
+        self.lines["distance"] = self.ax_d.plot([], [], ".", color=style.POS_X, alpha=0.4, markersize=3)[0]
+        self.ax_x.legend(loc="upper left", ncol=2)
         self.canvas = FigureCanvasTkAgg(self.fig, master=tab)
+        # Unscaled on purpose: matplotlib scales its canvas to the screen itself when it is shown
         self.canvas.get_tk_widget().config(height=PLOT_HEIGHT)
-        self.canvas.get_tk_widget().grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+        self.canvas.get_tk_widget().grid(row=2, column=0, sticky="ew", padx=12, pady=12)
 
         # Bottom: live Movella DOT IMU (scan, connect, values, plot)
         self.imu_panel = ImuPanel(tab)
-        self.imu_panel.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
+        self.imu_panel.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
 
     def run_thread(self, target, *args):
         self.stop_event.clear()
@@ -285,6 +296,7 @@ class Gui:
                     self.status.config(text=saved)
         elif self.mode == "preview" and not alive and self.error:
             self.status.config(text=f"Camera unavailable: {self.error}")
+            self.preview.config(text=f"No camera image\n\n{self.error}")
             self.mode = "idle"
         self.window.after(10, self.poll)
 
@@ -311,7 +323,7 @@ class Gui:
     def show(self, frame):
         # Scale to the largest size that fits next to the results panel
         h, w = frame.shape[:2]
-        avail_w = self.middle.winfo_width() - RESULTS_WIDTH
+        avail_w = self.middle.winfo_width() - style.px(RESULTS_WIDTH)
         avail_h = self.middle.winfo_height()
         scale = max(min(avail_w / w, avail_h / h), 0.2)
         small = cv2.resize(frame, (round(w * scale), round(h * scale)),
@@ -321,9 +333,14 @@ class Gui:
 
     def update_plots(self):
         rows = list(self.rows)
+        for ax, note in self.empty_notes.items():
+            note.set_visible(not rows)
+            ax.tick_params(labelleft=bool(rows))   # no meaningless y values on an empty plot
         if not rows:
             for line in self.lines.values():
                 line.set_data([], [])
+            for ax in self.empty_notes:
+                ax.set_xlim(0, PLOT_SECONDS)
             self.canvas.draw_idle()
             return
         rows = rows[-PLOT_SECONDS * 60:]   # enough for the window at up to 60 fps

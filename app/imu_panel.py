@@ -12,13 +12,14 @@ from matplotlib.figure import Figure
 
 from scipy.spatial.transform import Rotation
 
+import style
 from data_analysis import G, DotStreamer, scan_dots
 
 POLL_MS = 50          # how often new samples are fetched from the streamer
 PLOT_EVERY = 4        # redraw the plot every N polls
 PLOT_SECONDS = 10     # time window shown in the plot
-PLOT_HEIGHT = 200     # px
-AXIS_COLORS = {"x": "tab:red", "y": "tab:green", "z": "tab:blue"}
+PLOT_HEIGHT = 200     # px at 100 % scaling (matplotlib scales it to the screen)
+AXIS_COLORS = style.AXES_COLORS   # sensor axes x / y / z
 # Gravity auto-calibration: samples count as "at rest" below this rotation rate and
 # within this distance of G; the measured |a| at rest then updates the gravity estimate.
 REST_GYRO = 0.05      # rad/s (~3 deg/s)
@@ -53,7 +54,7 @@ class ImuPanel(ttk.Frame):
 
         controls = ttk.Frame(self)
         controls.pack(fill="x")
-        ttk.Label(controls, text="IMU:").pack(side="left")
+        ttk.Label(controls, text="IMU", style="Title.TLabel").pack(side="left", padx=(0, 6))
         self.scan_button = ttk.Button(controls, text="Scan", command=self.scan)
         self.scan_button.pack(side="left", padx=5)
         self.sensor_choice = ttk.Combobox(controls, width=28, state="readonly")
@@ -61,26 +62,33 @@ class ImuPanel(ttk.Frame):
         self.connect_button = ttk.Button(controls, text="Connect", command=self.toggle_connect,
                                          state="disabled")
         self.connect_button.pack(side="left", padx=5)
-        self.status = ttk.Label(controls, text="Not connected")
+        self.status = ttk.Label(controls, text="Not connected", style="Muted.TLabel")
         self.status.pack(side="left", padx=15)
-        self.values = ttk.Label(controls, text="", font=("Courier New", 12))
+        self.values = ttk.Label(controls, text="", font=style.MONO)
         self.values.pack(side="left", padx=15)
 
-        self.fig = Figure(figsize=(12, 2), dpi=100, layout="constrained")
+        self.fig = Figure(figsize=(12, PLOT_HEIGHT / 100), dpi=100, layout="constrained")   # height = PLOT_HEIGHT
         self.ax_acc, self.ax_lin, self.ax_gyro = self.fig.subplots(1, 3)
-        self.ax_acc.set_title("acceleration incl. gravity (m/s²)", fontsize=9)
-        self.ax_lin.set_title("acceleration, gravity removed (m/s²)", fontsize=9)
-        self.ax_gyro.set_title("angular velocity (rad/s)", fontsize=9)
+        self.ax_acc.set_title("Acceleration incl. gravity (m/s²)")
+        self.ax_lin.set_title("Acceleration, gravity removed (m/s²)")
+        self.ax_gyro.set_title("Angular velocity (rad/s)")
         self.lines = {}   # "ax".."az", "lx".."lz", "gx".."gz" -> line
         for ax, prefix in ((self.ax_acc, "a"), (self.ax_lin, "l"), (self.ax_gyro, "g")):
             ax.set_xlabel("t (s)")
-            ax.grid(alpha=0.3)
+            ax.set_xlim(-PLOT_SECONDS, 0)   # seconds before now, also while nothing is connected
             for c, col in AXIS_COLORS.items():
                 self.lines[prefix + c] = ax.plot([], [], color=col, lw=1, label=prefix + c)[0]
-            ax.legend(loc="upper left", fontsize=8)
+            ax.legend(loc="upper left", ncol=3)
+        # Grey note and no y values until the first samples arrive
+        self.empty_notes = [ax.text(0.5, 0.5, "no IMU data yet", ha="center", va="center",
+                                    transform=ax.transAxes, color=style.MUTED)
+                            for ax in (self.ax_acc, self.ax_lin, self.ax_gyro)]
+        for ax in (self.ax_acc, self.ax_lin, self.ax_gyro):
+            ax.tick_params(labelleft=False)
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+        # Unscaled on purpose: matplotlib scales its canvas to the screen itself when it is shown
         self.canvas.get_tk_widget().config(height=PLOT_HEIGHT)
-        self.canvas.get_tk_widget().pack(fill="x", pady=(5, 0))
+        self.canvas.get_tk_widget().pack(fill="x", pady=(6, 0))
 
         # Window closed: release the sensor so it can be used again right away
         self.bind("<Destroy>", self.on_destroy)
@@ -248,7 +256,10 @@ class ImuPanel(ttk.Frame):
         keep = t >= -PLOT_SECONDS
         for i, c in enumerate(("ax", "ay", "az", "lx", "ly", "lz", "gx", "gy", "gz"), start=1):
             self.lines[c].set_data(t[keep], data[keep, i])
+        for note in self.empty_notes:
+            note.set_visible(False)
         for ax in (self.ax_acc, self.ax_lin, self.ax_gyro):
+            ax.tick_params(labelleft=True)
             ax.set_xlim(-PLOT_SECONDS, 0)
             ax.relim()
             ax.autoscale_view(scalex=False)

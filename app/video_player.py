@@ -75,7 +75,9 @@ class VideoPlayer(ttk.Frame):
         entry.pack(side="left", padx=4)
         entry.bind("<Return>", lambda e: self.goto())
         ttk.Button(goto, text="Go", width=4, command=self.goto).pack(side="left")
-        self.info = ttk.Label(goto, text="", style="Muted.TLabel")
+        # Fixed width: a label that changes size on every frame makes Tk re-layout the whole window,
+        # which was the main cause of laggy playback
+        self.info = ttk.Label(goto, text="", style="Muted.TLabel", width=30, anchor="w")
         self.info.pack(side="left", padx=10)
 
     def load(self, path, tracking=None, overlay=None):
@@ -147,8 +149,12 @@ class VideoPlayer(ttk.Frame):
         scale = scale if scale > 0.05 else 0.5   # widget not laid out yet
         small = cv2.resize(frame, (max(1, round(w * scale)), max(1, round(h * scale))),
                            interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
-        self.photo = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB)))
-        self.screen.config(image=self.photo, text="")
+        image = Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
+        if self.photo is not None and (self.photo.width(), self.photo.height()) == image.size:
+            self.photo.paste(image)   # same size: reuse the Tk image instead of creating a new one
+        else:
+            self.photo = ImageTk.PhotoImage(image)
+            self.screen.config(image=self.photo, text="")
 
     # --- playback: follows the recorded frame times, scaled by the chosen speed ---
 

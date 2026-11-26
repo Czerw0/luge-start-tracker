@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from matplotlib.transforms import Bbox
 from scipy.signal import savgol_filter
 
 import style
@@ -352,6 +353,8 @@ class Dashboard(ttk.Frame):
         self.cursors = []
         self.cursor_dot = None
         self.cursor_t = None
+        self.cursor_shown_t = None   # cursor time currently on screen, None = blit the full axes
+        self.cursor_pos = None       # (t, x) of the tracked position, for the cursor dot
         self.background = None
         self.canvas.mpl_connect("draw_event", self.on_draw)
         # Click on a plot: jump the video to that time
@@ -482,9 +485,16 @@ class Dashboard(ttk.Frame):
 
         # Cursor for the current video frame (animated: drawn only by draw_cursor, not by draw)
         self.background = None
+        self.cursor_shown_t = None
         time_axes = (self.ax_pos, self.ax_imu_v, self.ax_acc, self.ax_gyro)
+        self.cursor_axes = time_axes
         self.cursors = [ax.axvline(np.nan, color=style.CURSOR, lw=1.5, animated=True) for ax in time_axes]
         self.cursor_dot = self.ax_pos.plot([], [], "o", color=style.CURSOR, markersize=7, animated=True)[0]
+        # Precomputed once: the cursor follows every video frame, pandas lookups there are too slow
+        self.cursor_pos = None
+        if df is not None and df["x_filt"].notna().any():
+            ok = df["x_filt"].notna()
+            self.cursor_pos = (df["t"][ok].to_numpy(float), df["x_filt"][ok].to_numpy(float))
 
         # User markers as vertical lines on the time plots
         for m in d["markers"]:
@@ -504,13 +514,16 @@ class Dashboard(ttk.Frame):
         df = d["tracking"]
         overlay = None
         if df is not None and {"frame", "x_filt", "y_filt"} <= set(df.columns):
-            pos = df.set_index("frame")[["x_filt", "y_filt"]]
+            # Lookup array indexed by frame number (NaN = no position); pandas .loc per frame is slow
+            frames = df["frame"].to_numpy(int)
+            pos = np.full((frames.max() + 1, 2), np.nan)
+            pos[frames] = df[["x_filt", "y_filt"]].to_numpy(float)
 
             def overlay(i):
                 # Tracked sled position of this frame, drawn on the video to check the tracking
-                if i not in pos.index or pos.loc[i].isna().any():
+                if i >= len(pos) or np.isnan(pos[i]).any():
                     return None
-                return pos.loc[i, "x_filt"], pos.loc[i, "y_filt"]
+                return pos[i, 0], pos[i, 1]
         self.player.load(d["video"], tracking=df, overlay=overlay)
 
     def show_direction(self):
@@ -561,6 +574,7 @@ class Dashboard(ttk.Frame):
     def on_draw(self, event):
         # Full redraw (new data, resize): keep the plots without cursor as the blit background
         self.background = self.canvas.copy_from_bbox(self.fig.bbox)
+        self.cursor_shown_t = None   # layout may have changed: next blit covers the full axes
         self.draw_cursor(blit=False)
 
     def draw_cursor(self, blit=True):
@@ -569,10 +583,8 @@ class Dashboard(ttk.Frame):
         t = self.cursor_t
         for line in self.cursors:
             line.set_xdata([t, t])
-        df = self.data["tracking"] if self.data else None
-        if df is not None and df["x_filt"].notna().any():
-            ok = df["x_filt"].notna()
-            self.cursor_dot.set_data([t], [np.interp(t, df["t"][ok], df["x_filt"][ok])])
+        if self.cursor_pos is not None:
+            self.cursor_dot.set_data([t], [np.interp(t, *self.cursor_pos)])
         else:
             self.cursor_dot.set_data([], [])
         if blit:
@@ -582,4 +594,28 @@ class Dashboard(ttk.Frame):
         for artist in self.cursors + [self.cursor_dot]:
             self.fig.draw_artist(artist)
         if blit:
-            self.canvas.blit(self.fig.bbox)
+            # Copy only the strip between the old and the new cursor to the screen: copying the
+            # whole (HiDPI) figure into Tk on every video frame is what made playback lag.
+            # Each strip is flushed on its own: Tk merges pending dirty regions into one bounding
+            # box, so strips in different plots would otherwise repaint almost the whole figure.
+            widget = self.canvas.get_tk_widget()
+            for ax in self.cursor_axes:
+                box = self.cursor_strip(ax, self.cursor_shown_t, t)
+                if box is not None:
+                    self.canvas.blit(box)
+                    widget.update_idletasks()
+        self.cursor_shown_t = t
+
+    def cursor_strip(self, ax, t_old, t_new):
+        # Region of ax (display pixels) that changes when the cursor moves from t_old to t_new
+        box = ax.bbox
+        if t_old is None:
+            return box
+        xs = ax.transData.transform([(t_old, 0), (t_new, 0)])[:, 0]
+        if not np.isfinite(xs).all():
+            return box
+        pad = self.fig.dpi * 0.12   # half the cursor dot plus line width, with margin
+        x0, x1 = max(box.x0, xs.min() - pad), min(box.x1, xs.max() + pad)
+        if x1 <= x0:   # cursor outside this plot's time range both times
+            return None
+        return Bbox.from_extents(x0, box.y0, x1, box.y1)

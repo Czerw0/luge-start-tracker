@@ -203,6 +203,11 @@ class ImuPanel(ttk.Frame):
         s = self.selected_sensor()
         return s["mac"] if s and self.streamer is not None else None
 
+    def is_connected(self):
+        # True once the sensor is connected and streaming (not while still connecting)
+        s = self.streamer
+        return s is not None and s.connected.is_set() and s.is_running()
+
     def add_samples(self, samples):
         # samples: tuples in SAMPLE_FIELDS order (t_host, ts_us, qw, qx, qy, qz, a xyz, g xyz)
         if not samples:

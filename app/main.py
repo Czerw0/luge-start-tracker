@@ -193,6 +193,11 @@ class Gui:
         if camera is None:
             messagebox.showerror("Luge Start Tracker", "Camera must be a number.")
             return
+        if not self.imu_panel.is_connected():   # every analysis needs video + IMU
+            messagebox.showerror("Luge Start Tracker",
+                                 "The IMU is not connected. Scan for the Movella DOT, connect it, "
+                                 "then start the analysis.")
+            return
         self.stop_thread()   # release the camera used by the preview
         self.reset_data()
         self.folder = ANALYSES_DIR / (datetime.now().strftime("%Y-%m-%d_%H%M%S") + "_measurement")

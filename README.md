@@ -44,7 +44,7 @@ Switch the sensor on and make sure it is **not** connected to the Movella DOT ph
 
 If the DOT's own orientation is still settling during the first 2 s (its tilt changes by more than 1° while the sled rests, e.g. right after switching the sensor on), it is not used: gravity is then removed with the still-window average, and the Analysis tab shows **IMU orientation: not settled**. Giving the sensor a few seconds on the sled before recording avoids this.
 
-**Recording camera + IMU together:** connect the sensor first, then click **Start analysis**. Keep the sled still for the first 2 s (used to calibrate gravity and remove the sensor bias). When you click **Stop analysis**, the analysis folder gets `imu_raw.csv` and `meta.json` (time offset between camera and IMU) next to the video, and the **Analysis** tab shows both on one time axis.
+**Recording camera + IMU together:** connect the sensor first, then click **Start analysis**; the analysis does not start while the IMU is not connected. Keep the sled still for the first 2 s (used to calibrate gravity and remove the sensor bias). When you click **Stop analysis**, the analysis folder gets `imu_raw.csv` and `meta.json` (time offset between camera and IMU) next to the video, and the **Analysis** tab shows both on one time axis.
 
 On macOS, the first run asks for Bluetooth permission for VS Code / Terminal. Allow it, otherwise no sensor is found.
 

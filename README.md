@@ -57,14 +57,17 @@ On macOS, the first run asks for Bluetooth permission for VS Code / Terminal. Al
 
 ### Marker colour calibration (Calibration tab)
 
-The tracker finds the markers by colour. To tune the colours to your camera and light:
+The tracker finds the markers by colour (a hue / saturation / brightness range). To set the range for your camera and light:
 
 1. Open the **Calibration** tab (it takes over the camera while it is open).
-2. Choose the marker (**Front** or **Back**) and its **base colour**.
-3. Click **Start calibration** and keep moving that marker in front of the camera for 6 s. Only the moving blob of that colour is used, so still objects of a similar colour are not mistaken for the marker.
-4. The fitted range is saved to `marker_colors.json` and used for all new tracking. The right image shows which pixels fall into the range: after calibrating, only the marker should be white.
+2. Choose the marker (**Front** or **Back**) and its **colour**. The sliders show the values in use.
+3. Move the sliders (hue min/max, saturation min/max, brightness min/max) while watching the live view: the thick cyan outline is exactly what the tracker detects with these values, the right image is what the tracker sees (white = in the range). The other marker is outlined thinly with its saved values.
+   - Skin or a red/brown background detected too? Raise **saturation min**; markers are much more saturated than skin.
+   - Marker only partly white? Widen the hue range or lower saturation/brightness min.
+   - If hue min > hue max, the range wraps through red (e.g. 170 to 10).
+4. Click **Save**. The values go to `marker_colors.json` and are used for all new tracking.
 
-**Reset to default** returns the selected marker to the built-in colour (front GREEN, back PINK). Front and back must have different colours.
+**Revert** reloads the saved values, **Reset to default** returns the marker to the built-in colour (front GREEN, back PINK). **Auto-calibrate** proposes slider values while you move the (square) marker in front of the camera for 6 s; check them in the live view, then Save. Front and back must have different colours; choosing the other marker's colour swaps the two.
 
 ### Video player (Analysis tab)
 

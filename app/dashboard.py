@@ -7,13 +7,19 @@ import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from scipy.signal import savgol_filter
 
-from data_analysis import MAX_ORIENTATION_DRIFT_DEG, analyse_start, load_imu
+from data_analysis import MAX_ORIENTATION_DRIFT_DEG, analyse_start, load_imu, lowpass
 from push_detection import find_pushes, refine_offset, valid_frames
 from video_player import VideoPlayer
 
 IMU_FILES = ("imu_raw.csv", "imu.csv")
 VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv")
+NOISE_WINDOW_S = 0.3   # video noise = raw position minus a Savitzky-Golay smoothing over this window
+JUMP_PX = 50           # residual above this = tracking jump (wrong blob / lost marker); fast real
+                       # motion stays below ~30 px, measured jumps were 100-200 px
+IMU_STILL_S = (0.3, 1.8)   # still window after the IMU start (same as analyse_start's default)
+IMU_LOWPASS_HZ = 15.0      # same low-pass as analyse_start
 MIN_SYNC_R = 0.9   # below this video and IMU do not show the same movement: sync not trusted (good recordings: 0.98-1.0)
 
 
@@ -121,6 +127,45 @@ def summarise(data):
     return out
 
 
+def marker_names(df):
+    # Marker names from the tracking columns, e.g. ["GREEN", "PINK"]
+    return [c[:-len("_x_filt")] for c in df.columns if c.endswith("_x_filt") and c != "mid_x_filt"]
+
+
+def video_noise(df):
+    # {"GREEN_x": residual, ...}: raw marker position minus a smoothed version (px, NaN where
+    # the marker was not found). What is left is the frame-to-frame jitter of the detection;
+    # very fast real motion leaks in a little, so the still parts give the cleanest value.
+    t = df["t"].to_numpy(float)
+    fps = (len(t) - 1) / (t[-1] - t[0]) if len(t) > 1 and t[-1] > t[0] else 30.0
+    window = max(5, int(round(NOISE_WINDOW_S * fps)) | 1)   # odd number of frames
+    out = {}
+    for name in marker_names(df):
+        for axis in ("x", "y"):
+            raw = df[f"{name}_{axis}"].to_numpy(float)
+            found = ~np.isnan(raw)
+            residual = np.full_like(raw, np.nan)
+            if found.sum() > window:
+                # Bridge short gaps for the filter only; residuals are kept where the marker was seen
+                filled = np.interp(np.arange(len(raw)), np.flatnonzero(found), raw[found])
+                residual[found] = (raw - savgol_filter(filled, window, 2))[found]
+            out[f"{name}_{axis}"] = residual
+    return out
+
+
+def robust_std(values):
+    # Standard deviation from the median absolute deviation: the typical jitter, not
+    # dominated by a few frames where the tracking jumped (plain std is)
+    v = values[np.isfinite(values)]
+    return 1.4826 * float(np.median(np.abs(v - np.median(v))))
+
+
+def imu_filtered(result):
+    # Gravity- and bias-free acceleration (sensor axes) after the 15 Hz low-pass, n x 3
+    fs = 1.0 / np.median(np.diff(result["t"]))
+    return lowpass(result[["lx", "ly", "lz"]].to_numpy(float), fs, fc=min(IMU_LOWPASS_HZ, 0.4 * fs))
+
+
 def development_values(data):
     # Label -> value text for the Development tab (diagnostics, not shown in the Analysis tab)
     out = {}
@@ -136,6 +181,27 @@ def development_values(data):
         out["x range"] = out["y range"] = out["Path length"] = "no tracking data"
     info = data["imu_info"]
     out["IMU drift v_end"] = f"{info['v_end']:.2f} m/s" if info is not None else "no IMU analysis"
+
+    if df is not None and len(df):
+        noise = video_noise(df)
+        for name in marker_names(df):
+            rx, ry = noise[f"{name}_x"], noise[f"{name}_y"]
+            if np.isfinite(rx).sum() < 2:
+                out[f"Video noise {name}"] = "not found"
+                continue
+            sx, sy = robust_std(rx), robust_std(ry)
+            jumps = int((np.hypot(rx, ry) > JUMP_PX).sum())
+            out[f"Video noise {name}"] = f"x {sx:.2f} / y {sy:.2f} px"
+            out[f"Tracking jumps {name}"] = f"{jumps} frames > {JUMP_PX} px"
+        d = df["distance"].dropna()
+        out["Marker distance"] = f"{d.mean():.1f} ± {d.std():.1f} px" if len(d) else "no data"
+    result = data["imu_result"]
+    if result is not None:
+        t = result["t"].to_numpy()
+        still = (t >= t[0] + IMU_STILL_S[0]) & (t <= t[0] + IMU_STILL_S[1])
+        if still.any():
+            std = result.loc[still, ["lx", "ly", "lz"]].std().to_numpy()
+            out["IMU noise at rest"] = f"{np.linalg.norm(std):.3f} m/s² (before low-pass)"
     return out
 
 
@@ -161,9 +227,72 @@ class DevelopmentTab(ttk.Frame):
         self.cards = ttk.Frame(self)
         self.cards.pack(fill="x", padx=10)
 
+        self.fig = Figure(figsize=(12, 6), dpi=100)
+        self.fig.subplots_adjust(left=0.06, right=0.98, bottom=0.08, top=0.94, wspace=0.18, hspace=0.42)
+        (self.ax_imu_raw, self.ax_imu_filt), (self.ax_noise, self.ax_dist) = self.fig.subplots(2, 2)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+
     def show(self, data):
         self.title.config(text=f"Recording: {data['folder'].name}")
         render_cards(self.cards, development_values(data), columns=4)
+        self.show_plots(data)
+
+    def show_plots(self, data):
+        for ax in self.fig.axes:
+            ax.clear()
+            ax.grid(alpha=0.3)
+            ax.set_xlabel("t (s)")
+
+        def no_data(ax, title, text):
+            ax.set_title(title)
+            ax.text(0.5, 0.5, text, ha="center", va="center", transform=ax.transAxes, color="gray")
+
+        colors = {"x": "tab:red", "y": "tab:green", "z": "tab:blue"}
+        imu, result = data["imu"], data["imu_result"]
+        title = "IMU before filtering: raw acceleration (sensor axes, with gravity)"
+        if imu is not None:
+            self.ax_imu_raw.set_title(title, fontsize=10)
+            for axis, c in colors.items():
+                self.ax_imu_raw.plot(imu["t"], imu["a" + axis], color=c, lw=0.8, label="a" + axis)
+            self.ax_imu_raw.set_ylabel("m/s²")
+            self.ax_imu_raw.legend(fontsize=8, loc="upper right")
+        else:
+            no_data(self.ax_imu_raw, title, "no IMU file")
+
+        title = f"IMU after filtering: gravity + bias removed, low-pass {IMU_LOWPASS_HZ:.0f} Hz"
+        if result is not None:
+            self.ax_imu_filt.set_title(title, fontsize=10)
+            filt = imu_filtered(result)
+            for i, (axis, c) in enumerate(colors.items()):
+                self.ax_imu_filt.plot(result["t"], result["l" + axis], color=c, lw=0.6, alpha=0.3)
+                self.ax_imu_filt.plot(result["t"], filt[:, i], color=c, lw=1.0, label="a" + axis)
+            self.ax_imu_filt.set_ylabel("m/s²  (faint = before low-pass)")
+            self.ax_imu_filt.legend(fontsize=8, loc="upper right")
+        else:
+            no_data(self.ax_imu_filt, title, data["imu_error"] or "no IMU file")
+
+        df = data["tracking"]
+        title = f"Video noise: raw position minus smoothed ({NOISE_WINDOW_S:.1f} s)"
+        if df is not None and df["x_filt"].notna().any():
+            self.ax_noise.set_title(title, fontsize=10)
+            for name, residual in video_noise(df).items():
+                self.ax_noise.plot(df["t"], residual, lw=0.7,
+                                   ls="-" if name.endswith("_x") else ":", label=name)
+            self.ax_noise.set_ylabel("px")
+            self.ax_noise.legend(fontsize=8, loc="upper right", ncol=2)
+
+            self.ax_dist.set_title("Distance between markers", fontsize=10)
+            self.ax_dist.plot(df["t"], df["distance"], ".", ms=2, alpha=0.4, color="tab:green", label="centres, raw")
+            self.ax_dist.plot(df["t"], df["distance_filt"], color="tab:green", lw=1, label="centres, Kalman")
+            if "gap_px" in df and df["gap_px"].notna().any():
+                self.ax_dist.plot(df["t"], df["gap_px"], color="tab:purple", lw=1, label="edge gap (= 51 mm)")
+            self.ax_dist.set_ylabel("px")
+            self.ax_dist.legend(fontsize=8, loc="upper right")
+        else:
+            no_data(self.ax_noise, title, "no tracking data")
+            no_data(self.ax_dist, "Distance between markers", "no tracking data")
+        self.canvas.draw_idle()
 
 
 class Dashboard(ttk.Frame):
